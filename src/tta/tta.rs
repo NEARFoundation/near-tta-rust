@@ -32,11 +32,15 @@ impl TTA {
         for acc in accounts {
             let t = self.clone();
             let mut wallets_for_account = collections::HashSet::new();
-            wallets_for_account.insert(acc.clone());
-            // TODO(pierre): add lockup account
 
-            let w2 = wallets_for_account.clone();
-            let t2 = t.clone();
+            let lockup = get_associated_lockup(&acc, "near");
+            info!(?acc, ?lockup, "Got lockup");
+            wallets_for_account.insert(acc);
+            wallets_for_account.insert(lockup);
+
+            let w_2 = wallets_for_account.clone();
+            let tta_2 = t.clone();
+
             let task_1 = tokio::spawn(async move {
                 match t
                     .handle_incoming_txns(wallets_for_account, start_date, end_date)
@@ -47,7 +51,7 @@ impl TTA {
                 }
             });
             let task_2 = tokio::spawn(async move {
-                match t2.handle_outgoing_txns(w2, start_date, end_date).await {
+                match tta_2.handle_outgoing_txns(w_2, start_date, end_date).await {
                     Ok(txns) => Ok(txns),
                     Err(e) => Err(e),
                 }
@@ -109,4 +113,20 @@ impl TTA {
             Err(e) => Err(TtaError::DatabaseError(e)),
         }
     }
+}
+
+use sha2::{Digest, Sha256};
+
+pub fn get_associated_lockup(account_id: &str, master_account_id: &str) -> String {
+    format!(
+        "{}.lockup.{}",
+        &sha256(account_id)[0..40],
+        master_account_id
+    )
+}
+
+fn sha256(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }

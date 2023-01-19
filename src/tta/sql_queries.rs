@@ -23,8 +23,6 @@ impl SqlClient {
         start_date: chrono::DateTime<Utc>,
         end_date: chrono::DateTime<Utc>,
     ) -> Result<Vec<Transaction>, sqlx::Error> {
-        info!("Querying for account");
-
         let accs: Vec<String> = accounts.into_iter().collect();
         let s = start_date.to_rfc3339();
         let e = end_date.to_rfc3339();
