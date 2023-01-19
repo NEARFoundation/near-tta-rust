@@ -85,8 +85,8 @@ pub struct Transaction {
     pub b_prev_block_hash: String,
     #[serde(rename = "b_block_timestamp")]
     pub b_block_timestamp: Decimal,
-    #[serde(rename = "b_total_supply")]
-    pub b_total_supply: Decimal,
+    // #[serde(rename = "b_total_supply")]
+    // pub b_total_supply: Decimal,
     #[serde(rename = "b_gas_price")]
     pub b_gas_price: Decimal,
     #[serde(rename = "b_author_account_id")]

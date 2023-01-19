@@ -70,7 +70,6 @@ impl SqlClient {
                 B.BLOCK_HASH as B_BLOCK_HASH,
                 B.PREV_BLOCK_HASH as B_PREV_BLOCK_HASH,
                 B.BLOCK_TIMESTAMP as B_BLOCK_TIMESTAMP,
-                B.TOTAL_SUPPLY as B_TOTAL_SUPPLY,
                 B.GAS_PRICE as B_GAS_PRICE,
                 B.AUTHOR_ACCOUNT_ID as B_AUTHOR_ACCOUNT_ID,
                 EO.RECEIPT_ID as EO_RECEIPT_ID,
@@ -161,7 +160,6 @@ impl SqlClient {
                 B.BLOCK_HASH as B_BLOCK_HASH,
                 B.PREV_BLOCK_HASH as B_PREV_BLOCK_HASH,
                 B.BLOCK_TIMESTAMP as B_BLOCK_TIMESTAMP,
-                B.TOTAL_SUPPLY as B_TOTAL_SUPPLY,
                 B.GAS_PRICE as B_GAS_PRICE,
                 B.AUTHOR_ACCOUNT_ID as B_AUTHOR_ACCOUNT_ID,
                 EO.RECEIPT_ID as EO_RECEIPT_ID,
@@ -195,7 +193,6 @@ impl SqlClient {
         .await?;
 
         info!("Got {} transactions", txs.len());
-        info!("Txs: {:#?}", txs);
         Ok(txs)
     }
 }
