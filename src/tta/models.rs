@@ -35,78 +35,80 @@ pub struct Transaction {
     pub t_receipt_conversion_gas_burnt: std::option::Option<Decimal>,
     #[serde(rename = "t_receipt_conversion_tokens_burnt")]
     pub t_receipt_conversion_tokens_burnt: std::option::Option<Decimal>,
-    // #[serde(rename = "r_receipt_id")]
-    // pub r_receipt_id: String,
-    // #[serde(rename = "r_included_in_block_hash")]
-    // pub r_included_in_block_hash: String,
-    // #[serde(rename = "r_included_in_chunk_hash")]
-    // pub r_included_in_chunk_hash: String,
-    // #[serde(rename = "r_index_in_chunk")]
-    // pub r_index_in_chunk: i64,
-    // #[serde(rename = "r_included_in_block_timestamp")]
-    // pub r_included_in_block_timestamp: i64,
-    // #[serde(rename = "r_predecessor_account_id")]
-    // pub r_predecessor_account_id: String,
-    // #[serde(rename = "r_receiver_account_id")]
-    // pub r_receiver_account_id: String,
-    // #[serde(rename = "r_receipt_kind")]
-    // pub r_receipt_kind: String,
-    // #[serde(rename = "r_originated_from_transaction_hash")]
-    // pub r_originated_from_transaction_hash: String,
-    // #[serde(rename = "ta_transaction_hash")]
-    // pub ta_transaction_hash: String,
-    // #[serde(rename = "ta_index_in_transaction")]
-    // pub ta_index_in_transaction: i64,
-    // #[serde(rename = "ta_action_kind")]
-    // pub ta_action_kind: String,
-    // #[serde(rename = "ta_args")]
-    // pub ta_args: TaArgs,
-    // #[serde(rename = "ara_receipt_id")]
-    // pub ara_receipt_id: String,
-    // #[serde(rename = "ara_index_in_action_receipt")]
-    // pub ara_index_in_action_receipt: i64,
-    // #[serde(rename = "ara_action_kind")]
-    // pub ara_action_kind: String,
-    // #[serde(rename = "ara_args")]
+    #[serde(rename = "r_receipt_id")]
+    pub r_receipt_id: String,
+    #[serde(rename = "r_included_in_block_hash")]
+    pub r_included_in_block_hash: String,
+    #[serde(rename = "r_included_in_chunk_hash")]
+    pub r_included_in_chunk_hash: String,
+    #[serde(rename = "r_index_in_chunk")]
+    pub r_index_in_chunk: i32,
+    #[serde(rename = "r_included_in_block_timestamp")]
+    pub r_included_in_block_timestamp: Decimal,
+    #[serde(rename = "r_predecessor_account_id")]
+    pub r_predecessor_account_id: String,
+    #[serde(rename = "r_receiver_account_id")]
+    pub r_receiver_account_id: String,
+    #[serde(rename = "r_receipt_kind")]
+    pub r_receipt_kind: String,
+    #[serde(rename = "r_originated_from_transaction_hash")]
+    pub r_originated_from_transaction_hash: String,
+    #[serde(rename = "ta_transaction_hash")]
+    pub ta_transaction_hash: String,
+    #[serde(rename = "ta_index_in_transaction")]
+    pub ta_index_in_transaction: i32,
+    #[serde(rename = "ta_action_kind")]
+    pub ta_action_kind: String,
+    #[serde(rename = "ta_args")]
+    pub ta_args: serde_json::Value,
+    // pub ta_args: sqlx::types::Json<TaArgs>,
+    #[serde(rename = "ara_receipt_id")]
+    pub ara_receipt_id: String,
+    #[serde(rename = "ara_index_in_action_receipt")]
+    pub ara_index_in_action_receipt: i32,
+    #[serde(rename = "ara_action_kind")]
+    pub ara_action_kind: String,
+    #[serde(rename = "ara_args")]
+    pub ara_args: serde_json::Value,
     // pub ara_args: AraArgs,
-    // #[serde(rename = "ara_receipt_predecessor_account_id")]
-    // pub ara_receipt_predecessor_account_id: String,
-    // #[serde(rename = "ara_receipt_receiver_account_id")]
-    // pub ara_receipt_receiver_account_id: String,
-    // #[serde(rename = "ara_receipt_included_in_block_timestamp")]
-    // pub ara_receipt_included_in_block_timestamp: i64,
-    // #[serde(rename = "b_block_height")]
-    // pub b_block_height: i64,
-    // #[serde(rename = "b_block_hash")]
-    // pub b_block_hash: String,
-    // #[serde(rename = "b_prev_block_hash")]
-    // pub b_prev_block_hash: String,
-    // #[serde(rename = "b_block_timestamp")]
-    // pub b_block_timestamp: i64,
-    // #[serde(rename = "b_total_supply")]
-    // pub b_total_supply: f64,
-    // #[serde(rename = "b_gas_price")]
-    // pub b_gas_price: i64,
-    // #[serde(rename = "b_author_account_id")]
-    // pub b_author_account_id: String,
-    // #[serde(rename = "eo_receipt_id")]
-    // pub eo_receipt_id: String,
-    // #[serde(rename = "eo_executed_in_block_hash")]
-    // pub eo_executed_in_block_hash: String,
-    // #[serde(rename = "eo_executed_in_block_timestamp")]
-    // pub eo_executed_in_block_timestamp: i64,
-    // #[serde(rename = "eo_index_in_chunk")]
-    // pub eo_index_in_chunk: i64,
-    // #[serde(rename = "eo_gas_burnt")]
-    // pub eo_gas_burnt: i64,
-    // #[serde(rename = "eo_tokens_burnt")]
-    // pub eo_tokens_burnt: f64,
-    // #[serde(rename = "eo_executor_account_id")]
-    // pub eo_executor_account_id: String,
-    // #[serde(rename = "eo_status")]
-    // pub eo_status: String,
-    // #[serde(rename = "eo_shard_id")]
-    // pub eo_shard_id: i64,
+    #[serde(rename = "ara_receipt_predecessor_account_id")]
+    pub ara_receipt_predecessor_account_id: String,
+    #[serde(rename = "ara_receipt_receiver_account_id")]
+    pub ara_receipt_receiver_account_id: String,
+    #[serde(rename = "ara_receipt_included_in_block_timestamp")]
+    pub ara_receipt_included_in_block_timestamp: Decimal,
+    #[serde(rename = "b_block_height")]
+    pub b_block_height: Decimal,
+    #[serde(rename = "b_block_hash")]
+    pub b_block_hash: String,
+    #[serde(rename = "b_prev_block_hash")]
+    pub b_prev_block_hash: String,
+    #[serde(rename = "b_block_timestamp")]
+    pub b_block_timestamp: Decimal,
+    #[serde(rename = "b_total_supply")]
+    pub b_total_supply: Decimal,
+    #[serde(rename = "b_gas_price")]
+    pub b_gas_price: Decimal,
+    #[serde(rename = "b_author_account_id")]
+    pub b_author_account_id: String,
+    #[serde(rename = "eo_receipt_id")]
+    pub eo_receipt_id: String,
+    #[serde(rename = "eo_executed_in_block_hash")]
+    pub eo_executed_in_block_hash: String,
+    #[serde(rename = "eo_executed_in_block_timestamp")]
+    pub eo_executed_in_block_timestamp: Decimal,
+    #[serde(rename = "eo_index_in_chunk")]
+    pub eo_index_in_chunk: i32,
+    #[serde(rename = "eo_gas_burnt")]
+    pub eo_gas_burnt: Decimal,
+    #[serde(rename = "eo_tokens_burnt")]
+    pub eo_tokens_burnt: Decimal,
+    #[serde(rename = "eo_executor_account_id")]
+    pub eo_executor_account_id: String,
+    #[serde(rename = "eo_status")]
+    pub eo_status: String,
+    #[serde(rename = "eo_shard_id")]
+    pub eo_shard_id: Decimal,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
