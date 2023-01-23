@@ -6,6 +6,8 @@ use std::{
 use chrono::DateTime;
 use tracing::{info, instrument};
 
+use crate::tta::AraArgs;
+
 use super::{sql_queries::SqlClient, Transaction, TtaError};
 
 #[derive(Debug, Clone)]
@@ -79,23 +81,28 @@ impl TTA {
         Ok(())
     }
 
+    // handle_incoming_txns handles incoming transactions to the given accounts.
     async fn handle_incoming_txns(
         self,
         accounts: HashSet<String>,
         start_date: DateTime<chrono::Utc>,
         end_date: DateTime<chrono::Utc>,
     ) -> Result<Vec<Transaction>, TtaError> {
-        match self
+        let incoming_txns = self
             .sql_client
             .get_incoming_txns(accounts, start_date, end_date)
             .await
-        {
-            Ok(txns) => Ok(txns),
-            Err(e) => {
-                info!(?e, "Got error");
-                Err(TtaError::DatabaseError(e))
-            }
+            .unwrap();
+
+        for txn in &incoming_txns {
+            // print txn hash
+            info!(?txn.t_transaction_hash, "Got txn hash");
+            info!(?txn.ara_args, "Args STRING");
+            let args: AraArgs = serde_json::from_value(txn.ara_args.clone()).unwrap();
+            info!(?args, "Got args");
         }
+
+        Ok(incoming_txns)
     }
 
     async fn handle_outgoing_txns(

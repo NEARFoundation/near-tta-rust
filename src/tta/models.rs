@@ -319,7 +319,7 @@ pub struct AraArgs {
     pub gas: Option<i64>,
     pub deposit: Option<String>,
     #[serde(rename = "args_json")]
-    pub args_json: Option<ArgsJson2>,
+    pub args_json: Option<FunctionCallParameters>,
     #[serde(rename = "args_base64")]
     pub args_base64: Option<String>,
     #[serde(rename = "method_name")]
@@ -332,11 +332,11 @@ pub struct AraArgs {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ArgsJson2 {
+pub struct FunctionCallParameters {
     #[serde(rename = "estimated_fee")]
-    pub estimated_fee: Value,
+    pub estimated_fee: Option<Value>,
     pub msg: Option<String>,
-    pub amount: Value,
+    pub amount: Option<Value>,
     #[serde(rename = "receiver_id")]
     pub receiver_id: Option<String>,
     #[serde(rename = "account_id")]
@@ -372,7 +372,8 @@ pub struct ArgsJson2 {
     pub public_key: Option<String>,
     #[serde(rename = "request_id")]
     pub request_id: Option<i64>,
-    pub request: Option<Request2>,
+    #[serde(rename = "request")]
+    pub request: Option<MultiSigRequest>,
     #[serde(rename = "lockup_duration")]
     pub lockup_duration: Option<String>,
     #[serde(rename = "lockup_timestamp")]
@@ -467,7 +468,7 @@ pub struct Expected2 {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Request2 {
+pub struct MultiSigRequest {
     pub actions: Vec<Action4>,
     #[serde(rename = "receiver_id")]
     pub receiver_id: String,
@@ -477,11 +478,11 @@ pub struct Request2 {
 #[serde(rename_all = "camelCase")]
 pub struct Action4 {
     #[serde(rename = "type")]
-    pub type_field: String,
+    pub type_field: Option<String>,
     pub amount: Option<String>,
-    pub gas: Value,
+    pub gas: Option<Value>,
     pub args: Option<String>,
-    pub deposit: Value,
+    pub deposit: Option<Value>,
     #[serde(rename = "method_name")]
     pub method_name: Option<String>,
     pub permission: Option<Permission3>,
