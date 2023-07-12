@@ -1,37 +1,36 @@
+use anyhow::Result;
 use axum::{
     extract::{Query, State},
+    response::{IntoResponse, Response},
     routing::get,
     Router,
 };
-// use bb8::Pool;
-// use bb8_postgres::PostgresConnectionManager;
 use chrono::DateTime;
+use dotenvy::dotenv;
 use hyper::StatusCode;
+use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-};
-// use tokio_postgres::NoTls;
+use std::{collections::HashSet, net::SocketAddr};
 use tracing::*;
 use tracing_subscriber::FmtSubscriber;
 use tta::{SqlClient, TTA};
-
 pub mod tta;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<()> {
+    dotenv()?;
+
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::DEBUG)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    tracing::subscriber::set_global_default(subscriber)?;
 
     info!("Starting up");
 
     let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect("postgres://labs_explorer:A05eC2a93B276b46C179@142.132.152.134/mainnet_node")
+        .max_connections(10)
+        .connect(env!("DATABASE_URL"))
         .await?;
 
     let sql_client = SqlClient::new(pool);
@@ -43,45 +42,73 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .route("/tta", get(get_txns_report))
         .with_state(tta_service);
 
-    info!("Binding server to 0.0.0.0:3000");
-    axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+    let ip = env!("IP");
+    let port = env!("PORT");
+    let address = format!("{ip}:{port}");
+    info!("Binding server to {address}");
+
+    axum::Server::bind(&address.parse().unwrap())
         .serve(app.into_make_service())
         .await
         .unwrap();
 
-    info!("Closing server on 0.0.0.0:3000");
+    info!("Closing server on {address}");
     Ok(())
-}
-
-/// Utility function for mapping any error into a `500 Internal Server Error`
-/// response.
-fn internal_error<E>(err: E) -> (StatusCode, String)
-where
-    E: std::error::Error,
-{
-    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
 // HTTP layer
 
+#[derive(Debug, Deserialize)]
+struct TxnsReportParams {
+    pub start_date: String,
+    pub end_date: String,
+    pub accounts: String,
+}
+
 async fn get_txns_report(
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<TxnsReportParams>,
     State(tta_service): State<TTA>,
-) -> Result<(), (StatusCode, String)> {
-    let start_date = params.get("start_date").unwrap();
-    let end_date = params.get("end_date").unwrap();
-    let accounts = params.get("accounts").unwrap();
+) -> Result<(), AppError> {
+    let start_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.start_date)
+        .unwrap()
+        .into();
+    let end_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.end_date)
+        .unwrap()
+        .into();
+    let accounts: HashSet<String> = params.accounts.split(',').map(String::from).collect();
 
-    let start_date: DateTime<chrono::Utc> =
-        DateTime::parse_from_rfc3339(start_date).unwrap().into();
-    let end_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(end_date).unwrap().into();
-    let accounts: HashSet<String> = accounts.split(',').map(|s| s.to_string()).collect();
+    tta_service
+        .get_txns_report(
+            start_date.timestamp_nanos() as u128,
+            end_date.timestamp_nanos() as u128,
+            accounts,
+        )
+        .await?;
 
-    match tta_service
-        .get_txns_report(start_date, end_date, accounts)
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(e) => Err(internal_error(e)),
+    Ok(())
+}
+
+// Make our own error that wraps `anyhow::Error`.
+struct AppError(anyhow::Error);
+
+// Tell axum how to convert `AppError` into a response.
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Something went wrong: {}", self.0),
+        )
+            .into_response()
+    }
+}
+
+// This enables using `?` on functions that return `Result<_, anyhow::Error>` to turn them into
+// `Result<_, AppError>`. That way you don't need to do that manually.
+impl<E> From<E> for AppError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
     }
 }

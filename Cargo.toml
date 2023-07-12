@@ -15,6 +15,9 @@ serde_json = "1.0.91"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
 chrono = "0.4.23"
-sqlx = {version = "0.6.2", features = ["postgres", "runtime-tokio-rustls", "json", "chrono", "offline", "macros", "decimal"]}
+sqlx = {version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "json", "chrono", "offline", "macros", "decimal"]}
 dotenvy = "0.15.6"
 sha2 = "0.10.6"
+anyhow = "1.0.71"
+futures-util = "0.3.28"
+tokio-stream = "0.1.14"

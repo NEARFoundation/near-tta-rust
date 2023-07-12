@@ -1,8 +1,10 @@
 use std::collections::{self};
 
-use chrono::Utc;
-use sqlx::{Pool, Postgres};
-use tracing::{info, instrument};
+use anyhow::Result;
+use sqlx::{types::Decimal, Pool, Postgres};
+use tokio::sync::mpsc::Sender;
+use tokio_stream::StreamExt;
+use tracing::{debug, error, instrument};
 
 use crate::tta::Transaction;
 
@@ -20,14 +22,15 @@ impl SqlClient {
     pub async fn get_outgoing_txns(
         &self,
         accounts: collections::HashSet<String>,
-        start_date: chrono::DateTime<Utc>,
-        end_date: chrono::DateTime<Utc>,
-    ) -> Result<Vec<Transaction>, sqlx::Error> {
+        start_date: u128,
+        end_date: u128,
+        sender_txn: Sender<Transaction>,
+    ) -> Result<()> {
         let accs: Vec<String> = accounts.into_iter().collect();
-        let s = start_date.to_rfc3339();
-        let e = end_date.to_rfc3339();
+        let start_date_decimal = Decimal::from(start_date);
+        let end_date_decimal = Decimal::from(end_date);
 
-        let txs: Vec<Transaction> = sqlx::query_as!(
+        let mut stream_txs = sqlx::query_as!(
             Transaction,
             r##"SELECT
                 T.TRANSACTION_HASH as T_TRANSACTION_HASH,
@@ -90,33 +93,43 @@ impl SqlClient {
             WHERE
                 receipt_predecessor_account_id = ANY($1)
                 AND EO.STATUS IN ('SUCCESS_RECEIPT_ID', 'SUCCESS_VALUE')
-                and to_char(to_timestamp(b.block_timestamp / 1000000000), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') >= $2
-                and to_char(to_timestamp(b.block_timestamp / 1000000000), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') < $3;
+                and B.BLOCK_TIMESTAMP >= $2
+                and B.BLOCK_TIMESTAMP < $3;
             "##,
             &accs,
-            &s,
-            &e,
+            &start_date_decimal,
+            &end_date_decimal,
         )
-        .fetch_all(&self.pool)
-        .await?;
+        .fetch(&self.pool);
 
-        info!("Got {} transactions", txs.len());
+        while let Some(txn) = stream_txs.next().await {
+            match txn {
+                Ok(txn) => {
+                    // debug!("txn: {:?}", txn);
+                    if let Err(e) = sender_txn.send(txn).await {
+                        error!("Error sending transaction: {}", e);
+                    };
+                }
+                Err(e) => error!("Error getting transaction: {}", e),
+            }
+        }
 
-        Ok(txs)
+        Ok(())
     }
 
     #[instrument(skip(self))]
     pub async fn get_incoming_txns(
         &self,
         accounts: collections::HashSet<String>,
-        start_date: chrono::DateTime<Utc>,
-        end_date: chrono::DateTime<Utc>,
-    ) -> Result<Vec<Transaction>, sqlx::Error> {
+        start_date: u128,
+        end_date: u128,
+        sender_txn: Sender<Transaction>,
+    ) -> Result<()> {
         let accs: Vec<String> = accounts.into_iter().collect();
-        let s = start_date.to_rfc3339();
-        let e = end_date.to_rfc3339();
+        let start_date_decimal = Decimal::from(start_date);
+        let end_date_decimal = Decimal::from(end_date);
 
-        let txs: Vec<Transaction> = sqlx::query_as!(
+        let mut stream_txs = sqlx::query_as!(
             Transaction,
             r##"
             SELECT
@@ -180,17 +193,27 @@ impl SqlClient {
             WHERE
                 RECEIPT_RECEIVER_ACCOUNT_ID = ANY ($1)
                 AND EO.STATUS IN ('SUCCESS_RECEIPT_ID', 'SUCCESS_VALUE')
-                AND TO_CHAR(TO_TIMESTAMP(B.BLOCK_TIMESTAMP / 1000000000), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') >= $2
-                AND TO_CHAR(TO_TIMESTAMP(B.BLOCK_TIMESTAMP / 1000000000), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') < $3;
+                AND B.BLOCK_TIMESTAMP >= $2
+                AND B.BLOCK_TIMESTAMP < $3;
             "##,
             &accs,
-            &s,
-            &e,
+            &start_date_decimal,
+            &end_date_decimal,
         )
-        .fetch_all(&self.pool)
-        .await?;
+        .fetch(&self.pool);
 
-        info!("Got {} transactions", txs.len());
-        Ok(txs)
+        while let Some(txn) = stream_txs.next().await {
+            match txn {
+                Ok(txn) => {
+                    // debug!("txn: {:?}", txn);
+                    if let Err(e) = sender_txn.send(txn).await {
+                        error!("Error sending transaction: {}", e);
+                    };
+                }
+                Err(e) => error!("Error getting transaction: {}", e),
+            }
+        }
+
+        Ok(())
     }
 }
