@@ -1,4 +1,5 @@
 use std::{
+    cmp,
     collections::{self, HashSet},
     fs::File,
     io::Write,
@@ -7,6 +8,7 @@ use std::{
 
 use anyhow::{bail, Result};
 
+use csv::WriterBuilder;
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc::channel;
 use tracing::{error, info, instrument};
@@ -48,7 +50,10 @@ impl TTA {
             let w_2 = wallets_for_account.clone();
             let tta_2 = t.clone();
 
-            let task_1 = tokio::spawn(async move {
+            let w_3 = wallets_for_account.clone();
+            let tta_3 = t.clone();
+
+            let task_incoming = tokio::spawn(async move {
                 match t
                     .handle_incoming_txns(wallets_for_account, start_date, end_date)
                     .await
@@ -57,14 +62,24 @@ impl TTA {
                     Err(e) => Err(e),
                 }
             });
-            let task_2 = tokio::spawn(async move {
-                match tta_2.handle_outgoing_txns(w_2, start_date, end_date).await {
+            let task_ft_incoming = tokio::spawn(async move {
+                match tta_2
+                    .handle_ft_incoming_txns(w_2, start_date, end_date)
+                    .await
+                {
                     Ok(txns) => Ok(txns),
                     Err(e) => Err(e),
                 }
             });
-            join_handles.push(task_1);
-            join_handles.push(task_2);
+            let task_outgoing = tokio::spawn(async move {
+                match tta_3.handle_outgoing_txns(w_3, start_date, end_date).await {
+                    Ok(txns) => Ok(txns),
+                    Err(e) => Err(e),
+                }
+            });
+            join_handles.push(task_incoming);
+            join_handles.push(task_ft_incoming);
+            join_handles.push(task_outgoing);
         }
 
         // Wait for threads to be over.
@@ -87,8 +102,29 @@ impl TTA {
         info!("It took: {:?}", ended_at - started_at);
         info!("Got {} txns", report.len());
 
-        let report_json = serde_json::to_string(&report[0..1000])?;
+        let report_json = serde_json::to_string(&report[0..cmp::min(report.len(), 1000)])?;
         tokio::fs::write("report.json", report_json).await?;
+
+        // After you've collected your transactions, open a file to write to
+        let file = File::create("report.csv")?;
+
+        // Create a CSV writer
+        let mut writer = WriterBuilder::new().from_writer(file);
+
+        for txn in report {
+            // Assume txn is of type Transaction and has the necessary fields
+            let record = [
+                &txn.t_transaction_hash,
+                &txn.t_signer_public_key,
+                &txn.t_receiver_account_id,
+            ];
+
+            // Write record to CSV
+            writer.write_record(record)?;
+        }
+
+        // Make sure to flush the writer to write any remaining bytes
+        writer.flush()?;
 
         info!("Done");
 
@@ -109,6 +145,32 @@ impl TTA {
         tokio::spawn(async move {
             t.sql_client
                 .get_incoming_txns(accounts, start_date, end_date, tx)
+                .await
+                .unwrap();
+        });
+
+        while let Some(txn) = rx.recv().await {
+            // info!("Got incoming txn: {:?}", txn);
+            txns.push(txn)
+        }
+
+        Ok(txns)
+    }
+
+    // handle_ft+incoming_txns handles incoming fungible token transactions for the given accounts.
+    async fn handle_ft_incoming_txns(
+        self,
+        accounts: HashSet<String>,
+        start_date: u128,
+        end_date: u128,
+    ) -> Result<Vec<Transaction>> {
+        let mut txns: Vec<Transaction> = vec![];
+        let (tx, mut rx) = channel(100);
+
+        let t = self.clone();
+        tokio::spawn(async move {
+            t.sql_client
+                .get_ft_incoming_txns(accounts, start_date, end_date, tx)
                 .await
                 .unwrap();
         });

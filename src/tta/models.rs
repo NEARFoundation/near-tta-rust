@@ -51,14 +51,14 @@ pub struct Transaction {
     pub r_receipt_kind: String,
     #[serde(rename = "r_originated_from_transaction_hash", default)]
     pub r_originated_from_transaction_hash: String,
-    #[serde(rename = "ta_transaction_hash", default)]
-    pub ta_transaction_hash: String,
-    #[serde(rename = "ta_index_in_transaction", default)]
-    pub ta_index_in_transaction: i32,
-    #[serde(rename = "ta_action_kind", default)]
-    pub ta_action_kind: String,
-    #[serde(rename = "ta_args", default)]
-    pub ta_args: serde_json::Value,
+    // #[serde(rename = "ta_transaction_hash", default)]
+    // pub ta_transaction_hash: String,
+    // #[serde(rename = "ta_index_in_transaction", default)]
+    // pub ta_index_in_transaction: i32,
+    // #[serde(rename = "ta_action_kind", default)]
+    // pub ta_action_kind: String,
+    // #[serde(rename = "ta_args", default)]
+    // pub ta_args: serde_json::Value,
     // pub ta_args: sqlx::types::Json<TaArgs>,
     #[serde(rename = "ara_receipt_id", default)]
     pub ara_receipt_id: String,
