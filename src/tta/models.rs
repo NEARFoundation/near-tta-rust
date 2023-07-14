@@ -84,7 +84,7 @@ impl ReportRow {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FtAmounts {
     pub ft_amount_out: Option<f64>,
     pub ft_currency_out: Option<String>,
