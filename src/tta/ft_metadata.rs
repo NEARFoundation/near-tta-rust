@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryRequest, RpcQueryResponse};
 use near_primitives::{
@@ -43,7 +43,7 @@ impl FtMetadataCache {
         if !self.ft_metadata_cache.contains_key(ft_token_id) {
             let args = json!({}).to_string().into_bytes();
 
-            let result = view_function_call(
+            let result = match view_function_call(
                 &self.near_client,
                 QueryRequest::CallFunction {
                     account_id: ft_token_id.parse().unwrap(),
@@ -51,7 +51,17 @@ impl FtMetadataCache {
                     args: FunctionArgs::from(args),
                 },
             )
-            .await?;
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    bail!(
+                        "Error getting ft_metadata for ft_token_id: {}, error: {:?}",
+                        ft_token_id,
+                        e
+                    );
+                }
+            };
 
             let v = serde_json::from_slice(&result)?;
 
@@ -60,7 +70,7 @@ impl FtMetadataCache {
 
         match self.ft_metadata_cache.get(ft_token_id) {
             Some(v) => Ok(v.clone()),
-            None => anyhow::bail!("ft_metadata not found"),
+            None => bail!("ft_metadata not found"),
         }
     }
 }
@@ -69,15 +79,25 @@ pub async fn view_function_call(
     client: &JsonRpcClient,
     request: QueryRequest,
 ) -> anyhow::Result<Vec<u8>> {
-    let RpcQueryResponse { kind, .. } = client
+    let RpcQueryResponse { kind, .. } = match client
         .call(RpcQueryRequest {
             block_reference: BlockReference::Finality(Finality::Final),
-            request,
+            request: request.clone(),
         })
-        .await?;
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            bail!(
+                "Error calling view_function_call: {:?}, request: {:?}",
+                e,
+                request
+            );
+        }
+    };
 
     let QueryResponseKind::CallResult(CallResult{result, ..}) = kind else {
-      anyhow::bail!("Unexpected response kind");
+      bail!("Unexpected response kind");
     };
 
     Ok(result)

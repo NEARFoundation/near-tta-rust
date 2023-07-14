@@ -22,6 +22,18 @@ pub struct ReportRow {
     pub onchain_usdt_balance: f64,
 }
 
+// Define the extension trait
+pub trait FloatExt {
+    fn to_2dp_string(&self) -> String;
+}
+
+// Implement the extension trait for f64
+impl FloatExt for f64 {
+    fn to_2dp_string(&self) -> String {
+        format!("{:.2}", self)
+    }
+}
+
 impl ReportRow {
     pub fn get_vec_headers() -> Vec<String> {
         vec![
@@ -56,16 +68,18 @@ impl ReportRow {
             self.block_height.to_string(),
             self.args.clone(),
             self.transaction_hash.clone(),
-            self.amount_transferred.to_string(),
+            self.amount_transferred.to_2dp_string(),
             self.currency_transferred.clone(),
-            self.ft_amount_out.map_or(String::new(), |v| v.to_string()),
+            self.ft_amount_out
+                .map_or(String::new(), |v| v.to_2dp_string()),
             self.ft_currency_out.clone().unwrap_or_default(),
-            self.ft_amount_in.map_or(String::new(), |v| v.to_string()),
+            self.ft_amount_in
+                .map_or(String::new(), |v| v.to_2dp_string()),
             self.ft_currency_in.clone().unwrap_or_default(),
             self.to_account.clone(),
-            self.amount_staked.to_string(),
-            self.onchain_usdc_balance.to_string(),
-            self.onchain_usdt_balance.to_string(),
+            self.amount_staked.to_2dp_string(),
+            self.onchain_usdc_balance.to_2dp_string(),
+            self.onchain_usdt_balance.to_2dp_string(),
         ]
     }
 }

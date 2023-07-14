@@ -134,14 +134,21 @@ impl TTA {
                         report.extend(p);
                     }
                     Err(e) => {
-                        error!(?e, "Got error");
+                        error!(?e, "Error in returned value from thread");
                     }
                 },
                 Err(e) => {
-                    error!(?e, "Got error");
+                    error!(?e, "Error joining threads");
                 }
             }
         }
+
+        // sort the report by account_id and block_timestamp
+        report.sort_by(|a, b| {
+            a.account_id
+                .cmp(&b.account_id)
+                .then(a.block_timestamp.cmp(&b.block_timestamp))
+        });
 
         let ended_at = Utc::now();
 
@@ -204,7 +211,7 @@ impl TTA {
                 ft_currency_out: ft_amounts.ft_currency_out,
                 ft_amount_in: ft_amounts.ft_amount_in,
                 ft_currency_in: ft_amounts.ft_currency_in,
-                to_account: txn.t_receiver_account_id.clone(),
+                to_account: txn.r_receiver_account_id.clone(),
                 amount_staked: 0.0,
                 onchain_usdc_balance: 0.0,
                 onchain_usdt_balance: 0.0,
@@ -316,7 +323,7 @@ impl TTA {
             None => "".to_string(),
         };
 
-        let token_id = txn.t_receiver_account_id;
+        let token_id = txn.clone().r_receiver_account_id;
         let mut res = FtAmounts {
             ft_amount_out: None,
             ft_currency_out: None,
@@ -335,13 +342,21 @@ impl TTA {
                 Err(e) => bail!(
                     "Invalid ft_transfer args {:?}, err: {:?}",
                     ft_tranfer_args,
-                    e
+                    e,
                 ),
             };
 
             let ft_metadata_cache = self.ft_metadata_cache.clone();
             let mut w = ft_metadata_cache.lock().await;
-            let metadata = w.assert_ft_metadata(token_id.as_str()).await?;
+            let metadata = match w.assert_ft_metadata(token_id.as_str()).await {
+                Ok(metadata) => metadata,
+                Err(e) => bail!(
+                    "Failed to get ft_metadata for token_id: {:?}, txn: {:?}, err: {:?}",
+                    token_id,
+                    txn,
+                    e
+                ),
+            };
 
             let ft_amounts = FtAmounts {
                 ft_amount_out: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
