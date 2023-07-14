@@ -1,9 +1,6 @@
-mod errors;
-mod models;
-mod sql_queries;
-mod tta;
+pub mod models;
+pub mod sql;
+pub mod tta_impl;
 
-pub use errors::TtaError;
-pub use models::*;
-pub use sql_queries::SqlClient;
-pub use tta::TTA;
+pub mod ft_metadata;
+mod utils;

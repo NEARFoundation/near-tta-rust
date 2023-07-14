@@ -6,7 +6,7 @@ use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument};
 
-use crate::tta::Transaction;
+use super::models::Transaction;
 
 #[derive(Debug, Clone)]
 pub struct SqlClient {
@@ -109,6 +109,7 @@ impl SqlClient {
         while let Some(txn) = stream_txs.next().await {
             match txn {
                 Ok(txn) => {
+                    debug!("Sending transaction: {:?}", txn);
                     if let Err(e) = sender_txn.send(txn).await {
                         error!("Error sending transaction: {}", e);
                     };
@@ -219,6 +220,7 @@ impl SqlClient {
         while let Some(txn) = stream_txs.next().await {
             match txn {
                 Ok(txn) => {
+                    debug!("Sending transaction: {:?}", txn);
                     if let Err(e) = sender_txn.send(txn).await {
                         error!("Error sending transaction: {}", e);
                     };
@@ -233,6 +235,7 @@ impl SqlClient {
             end - start,
             accs
         );
+
         Ok(())
     }
 
@@ -327,6 +330,7 @@ impl SqlClient {
         while let Some(txn) = stream_txs.next().await {
             match txn {
                 Ok(txn) => {
+                    debug!("Sending transaction: {:?}", txn);
                     if let Err(e) = sender_txn.send(txn).await {
                         error!("Error sending transaction: {}", e);
                     };

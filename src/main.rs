@@ -8,12 +8,17 @@ use axum::{
 use chrono::DateTime;
 use dotenvy::dotenv;
 use hyper::StatusCode;
+use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL, NEAR_MAINNET_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use std::{collections::HashSet, net::SocketAddr};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use tokio::sync::Mutex;
 use tracing::*;
 use tracing_subscriber::FmtSubscriber;
-use tta::{SqlClient, TTA};
+use tta::tta_impl::TTA;
+
+use crate::tta::{ft_metadata::FtMetadataCache, sql::sql_queries::SqlClient};
+
 pub mod tta;
 
 #[tokio::main]
@@ -34,9 +39,11 @@ async fn main() -> Result<()> {
         .await?;
 
     let sql_client = SqlClient::new(pool);
+    let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
+    let ft_metadata_cache = Arc::new(Mutex::new(FtMetadataCache::new(near_client.clone())));
 
     // Start services
-    let tta_service = TTA::new(sql_client);
+    let tta_service = TTA::new(sql_client, near_client, ft_metadata_cache.clone());
 
     let app = Router::new()
         .route("/tta", get(get_txns_report))
