@@ -12,6 +12,7 @@ use near_primitives::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use tracing::info;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtMetadata {

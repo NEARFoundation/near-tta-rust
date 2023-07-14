@@ -11,15 +11,15 @@ use near_jsonrpc_client::JsonRpcClient;
 
 use crate::tta::utils::get_associated_lockup;
 use base64::{engine::general_purpose, Engine as _};
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, Utc};
 use csv::WriterBuilder;
-use num_traits::cast::ToPrimitive;
+use num_traits::{cast::ToPrimitive, Float, Pow};
 use tokio::sync::{mpsc::channel, Mutex};
 use tracing::{debug, error, info, instrument};
 
 use super::{
     ft_metadata::FtMetadataCache,
-    models::ReportRow,
+    models::{FtAmounts, ReportRow},
     sql::{
         models::{FtTransfer, TaArgs, Transaction},
         sql_queries::SqlClient,
@@ -57,47 +57,63 @@ impl TTA {
 
         let mut join_handles = vec![];
         let mut report = vec![];
-        let started_at = chrono::Utc::now();
+        let started_at = Utc::now();
 
-        for acc in accounts {
-            let t = self.clone();
-            let mut wallets_for_account = collections::HashSet::new();
-
-            let lockup = get_associated_lockup(&acc, "near");
+        for acc in &accounts {
+            let t = self;
+            let mut wallets_for_account = HashSet::new();
+            let lockup = get_associated_lockup(acc, "near");
             info!(?acc, ?lockup, "Got lockup");
-            wallets_for_account.insert(acc);
+            wallets_for_account.insert(acc.clone());
             wallets_for_account.insert(lockup);
 
-            let w_2 = wallets_for_account.clone();
-            let tta_2 = t.clone();
+            let task_incoming = tokio::spawn({
+                let wallets_for_account = wallets_for_account.clone();
+                let t = t.clone();
+                let a = acc.clone();
+                async move {
+                    match t
+                        .handle_incoming_txns(a, wallets_for_account, start_date, end_date)
+                        .await
+                    {
+                        Ok(txns) => Ok(txns),
+                        Err(e) => Err(e),
+                    }
+                }
+            });
 
-            let w_3 = wallets_for_account.clone();
-            let tta_3 = t.clone();
+            let task_ft_incoming = tokio::spawn({
+                let wallets_for_account = wallets_for_account.clone();
+                let t = t.clone();
+                let a = acc.clone();
 
-            let task_incoming = tokio::spawn(async move {
-                match t
-                    .handle_incoming_txns(wallets_for_account, start_date, end_date)
-                    .await
-                {
-                    Ok(txns) => Ok(txns),
-                    Err(e) => Err(e),
+                async move {
+                    match t
+                        .handle_ft_incoming_txns(a, wallets_for_account, start_date, end_date)
+                        .await
+                    {
+                        Ok(txns) => Ok(txns),
+                        Err(e) => Err(e),
+                    }
                 }
             });
-            let task_ft_incoming = tokio::spawn(async move {
-                match tta_2
-                    .handle_ft_incoming_txns(w_2, start_date, end_date)
-                    .await
-                {
-                    Ok(txns) => Ok(txns),
-                    Err(e) => Err(e),
+
+            let task_outgoing = tokio::spawn({
+                let wallets_for_account = wallets_for_account.clone();
+                let t = t.clone();
+                let a = acc.clone();
+
+                async move {
+                    match t
+                        .handle_outgoing_txns(a, wallets_for_account, start_date, end_date)
+                        .await
+                    {
+                        Ok(txns) => Ok(txns),
+                        Err(e) => Err(e),
+                    }
                 }
             });
-            let task_outgoing = tokio::spawn(async move {
-                match tta_3.handle_outgoing_txns(w_3, start_date, end_date).await {
-                    Ok(txns) => Ok(txns),
-                    Err(e) => Err(e),
-                }
-            });
+
             join_handles.push(task_incoming);
             join_handles.push(task_ft_incoming);
             join_handles.push(task_outgoing);
@@ -107,7 +123,16 @@ impl TTA {
         for ele in join_handles {
             match ele.await {
                 Ok(res) => match res {
-                    Ok(partial_report) => report.extend(partial_report),
+                    Ok(partial_report) => {
+                        let mut p = vec![];
+                        // Aply filtering
+                        for ele in partial_report {
+                            if let Some(ele) = assert_moves_token(ele) {
+                                p.push(ele)
+                            }
+                        }
+                        report.extend(p);
+                    }
                     Err(e) => {
                         error!(?e, "Got error");
                     }
@@ -118,14 +143,18 @@ impl TTA {
             }
         }
 
-        let ended_at = chrono::Utc::now();
+        let ended_at = Utc::now();
 
-        info!("It took: {:?}", ended_at - started_at);
-        info!("Got {} txns", report.len());
+        info!(
+            "It took: {:?}, got {} txns",
+            ended_at - started_at,
+            report.len()
+        );
 
         let file = File::create("report.csv")?;
         let mut writer = WriterBuilder::new().from_writer(file);
 
+        writer.write_record(ReportRow::get_vec_headers())?;
         for record in report {
             writer.write_record(record.to_vec())?;
         }
@@ -140,6 +169,7 @@ impl TTA {
     // handle_incoming_txns handles incoming transactions to the given accounts.
     async fn handle_incoming_txns(
         self,
+        for_account: String,
         accounts: HashSet<String>,
         start_date: u128,
         end_date: u128,
@@ -157,10 +187,10 @@ impl TTA {
 
         while let Some(txn) = rx.recv().await {
             let txn_args = decode_args(txn.clone());
-            let (ft_amount_in, ft_amount_out, ft_currency_in, ft_currency_out) =
-                self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+            let ft_amounts = self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+
             let row = ReportRow {
-                account_id: "test".to_string(),
+                account_id: for_account.clone(),
                 date: get_transaction_date(txn.clone()),
                 method_name: get_method_name(txn.clone(), txn_args.clone()),
                 block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
@@ -168,12 +198,12 @@ impl TTA {
                 block_height: txn.b_block_height.to_u128().unwrap(),
                 args: decode_transaction_args(txn_args.clone()),
                 transaction_hash: txn.t_transaction_hash.clone(),
-                amount_transferred: get_near_transferred(txn_args.clone()) * -1.0,
+                amount_transferred: get_near_transferred(txn_args.clone()),
                 currency_transferred: "NEAR".to_string(),
-                ft_amount_out,
-                ft_currency_out,
-                ft_amount_in,
-                ft_currency_in,
+                ft_amount_out: ft_amounts.ft_amount_out,
+                ft_currency_out: ft_amounts.ft_currency_out,
+                ft_amount_in: ft_amounts.ft_amount_in,
+                ft_currency_in: ft_amounts.ft_currency_in,
                 to_account: txn.t_receiver_account_id.clone(),
                 amount_staked: 0.0,
                 onchain_usdc_balance: 0.0,
@@ -187,6 +217,7 @@ impl TTA {
     // handle_ft+incoming_txns handles incoming fungible token transactions for the given accounts.
     async fn handle_ft_incoming_txns(
         self,
+        for_account: String,
         accounts: HashSet<String>,
         start_date: u128,
         end_date: u128,
@@ -204,10 +235,10 @@ impl TTA {
 
         while let Some(txn) = rx.recv().await {
             let txn_args = decode_args(txn.clone());
-            let (ft_amount_in, ft_amount_out, ft_currency_in, ft_currency_out) =
-                self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+            let ft_amounts = self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+
             let row = ReportRow {
-                account_id: "test".to_string(),
+                account_id: for_account.clone(),
                 date: get_transaction_date(txn.clone()),
                 method_name: get_method_name(txn.clone(), txn_args.clone()),
                 block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
@@ -217,10 +248,10 @@ impl TTA {
                 transaction_hash: txn.t_transaction_hash.clone(),
                 amount_transferred: get_near_transferred(txn_args.clone()) * -1.0,
                 currency_transferred: "NEAR".to_string(),
-                ft_amount_out,
-                ft_currency_out,
-                ft_amount_in,
-                ft_currency_in,
+                ft_amount_out: ft_amounts.ft_amount_out,
+                ft_currency_out: ft_amounts.ft_currency_out,
+                ft_amount_in: ft_amounts.ft_amount_in,
+                ft_currency_in: ft_amounts.ft_currency_in,
                 to_account: txn.t_receiver_account_id.clone(),
                 amount_staked: 0.0,
                 onchain_usdc_balance: 0.0,
@@ -234,6 +265,7 @@ impl TTA {
 
     async fn handle_outgoing_txns(
         self,
+        for_account: String,
         accounts: HashSet<String>,
         start_date: u128,
         end_date: u128,
@@ -250,12 +282,10 @@ impl TTA {
         });
 
         while let Some(txn) = rx.recv().await {
-            debug!("handle_outgoing_txns - Got txn: {:?}", txn);
             let txn_args = decode_args(txn.clone());
-            let (ft_amount_in, ft_amount_out, ft_currency_in, ft_currency_out) =
-                self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+            let ft_amounts = self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
             let row = ReportRow {
-                account_id: "test".to_string(),
+                account_id: for_account.clone(),
                 date: get_transaction_date(txn.clone()),
                 method_name: get_method_name(txn.clone(), txn_args.clone()),
                 block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
@@ -265,10 +295,10 @@ impl TTA {
                 transaction_hash: txn.t_transaction_hash.clone(),
                 amount_transferred: get_near_transferred(txn_args.clone()) * -1.0,
                 currency_transferred: "NEAR".to_string(),
-                ft_amount_out,
-                ft_currency_out,
-                ft_amount_in,
-                ft_currency_in,
+                ft_amount_out: ft_amounts.ft_amount_out,
+                ft_currency_out: ft_amounts.ft_currency_out,
+                ft_amount_in: ft_amounts.ft_amount_in,
+                ft_currency_in: ft_amounts.ft_currency_in,
                 to_account: txn.t_receiver_account_id.clone(),
                 amount_staked: 0.0,
                 onchain_usdc_balance: 0.0,
@@ -280,22 +310,23 @@ impl TTA {
         Ok(report)
     }
 
-    async fn get_ft_amounts(
-        &self,
-        txn: Transaction,
-        txn_args: TaArgs,
-    ) -> Result<(f64, f64, String, String)> {
+    async fn get_ft_amounts(&self, txn: Transaction, txn_args: TaArgs) -> Result<FtAmounts> {
         let method_name = match txn_args.clone().method_name {
             Some(method_name) => method_name,
             None => "".to_string(),
         };
 
-        let token_id = txn.r_receiver_account_id;
-        let mut ft_amount_in = 0.0;
-        let mut ft_amount_out = 0.0;
-        let mut ft_currency_in = "".to_string();
-        let mut ft_currency_out = "".to_string();
+        let token_id = txn.t_receiver_account_id;
+        let mut res = FtAmounts {
+            ft_amount_out: None,
+            ft_currency_out: None,
+            ft_amount_in: None,
+            ft_currency_in: None,
+            from_account: "".to_string(),
+            to_account: "".to_string(),
+        };
 
+        // TODO: Switch to a match statement
         if method_name == "ft_transfer" {
             let ft_tranfer_args = decode_transaction_args(txn_args.clone());
             let args = serde_json::from_str::<FtTransfer>(&ft_tranfer_args);
@@ -310,18 +341,21 @@ impl TTA {
 
             let ft_metadata_cache = self.ft_metadata_cache.clone();
             let mut w = ft_metadata_cache.lock().await;
-            let e = w.assert_ft_metadata(token_id.as_str()).await?;
+            let metadata = w.assert_ft_metadata(token_id.as_str()).await?;
 
-            // if args.receiver_id.to_string() == token_id {
-            //     ft_amount_in = args.amount.0;
-            //     ft_currency_in = args.token_id;
-            // } else {
-            //     ft_amount_out = args.amount;
-            //     ft_currency_out = args.token_id;
-            // }
+            let ft_amounts = FtAmounts {
+                ft_amount_out: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
+                ft_currency_out: Some(metadata.symbol),
+                ft_amount_in: None,
+                ft_currency_in: None,
+                from_account: txn.ara_receipt_predecessor_account_id,
+                to_account: args.receiver_id.to_string(),
+            };
+
+            res = ft_amounts;
         }
 
-        Ok((ft_amount_in, ft_amount_out, ft_currency_in, ft_currency_out))
+        Ok(res)
     }
 }
 
@@ -345,6 +379,14 @@ fn get_near_transferred(txn_args: TaArgs) -> f64 {
             (amount >= 0.0001).then_some(amount)
         })
         .unwrap_or(0.0)
+}
+
+fn safe_divide_u128(a: u128, decimals: u32) -> f64 {
+    if a >= 10u128.pow(decimals) {
+        a as f64 / 10f64.powi(decimals as i32)
+    } else {
+        0.0
+    }
 }
 
 fn decode_args(txn: Transaction) -> TaArgs {
@@ -390,4 +432,16 @@ fn get_transaction_date(txn: Transaction) -> String {
         .expect("Invalid timestamp")
         .date();
     date.format("%B %d, %Y").to_string()
+}
+
+fn assert_moves_token(row: ReportRow) -> Option<ReportRow> {
+    if row.amount_transferred == 0.0
+        && row.ft_amount_out.is_none()
+        && row.ft_amount_in.is_none()
+        && row.amount_staked == 0.0
+    {
+        None
+    } else {
+        Some(row)
+    }
 }

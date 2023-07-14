@@ -18,7 +18,7 @@ impl SqlClient {
         Self { pool }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, sender_txn))]
     pub async fn get_outgoing_txns(
         &self,
         accounts: collections::HashSet<String>,
@@ -89,7 +89,7 @@ impl SqlClient {
                 receipt_predecessor_account_id = ANY($1)
                 AND EO.STATUS IN ('SUCCESS_RECEIPT_ID', 'SUCCESS_VALUE')
                 and B.BLOCK_TIMESTAMP >= $2
-                and B.BLOCK_TIMESTAMP < $3
+                and B.BLOCK_TIMESTAMP < $3  
                 AND NOT EXISTS (
                     SELECT 1
                     FROM RECEIPTS R2
@@ -109,7 +109,6 @@ impl SqlClient {
         while let Some(txn) = stream_txs.next().await {
             match txn {
                 Ok(txn) => {
-                    debug!("Sending transaction: {:?}", txn);
                     if let Err(e) = sender_txn.send(txn).await {
                         error!("Error sending transaction: {}", e);
                     };
@@ -128,7 +127,7 @@ impl SqlClient {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, sender_txn))]
     pub async fn get_incoming_txns(
         &self,
         accounts: collections::HashSet<String>,
@@ -220,7 +219,6 @@ impl SqlClient {
         while let Some(txn) = stream_txs.next().await {
             match txn {
                 Ok(txn) => {
-                    debug!("Sending transaction: {:?}", txn);
                     if let Err(e) = sender_txn.send(txn).await {
                         error!("Error sending transaction: {}", e);
                     };
@@ -239,7 +237,7 @@ impl SqlClient {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, sender_txn))]
     pub async fn get_ft_incoming_txns(
         &self,
         accounts: collections::HashSet<String>,
@@ -330,7 +328,6 @@ impl SqlClient {
         while let Some(txn) = stream_txs.next().await {
             match txn {
                 Ok(txn) => {
-                    debug!("Sending transaction: {:?}", txn);
                     if let Err(e) = sender_txn.send(txn).await {
                         error!("Error sending transaction: {}", e);
                     };
