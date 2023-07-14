@@ -194,7 +194,9 @@ impl TTA {
 
         while let Some(txn) = rx.recv().await {
             let txn_args = decode_args(txn.clone());
-            let ft_amounts = self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+            let ft_amounts = self
+                .get_ft_amounts(for_account.clone(), txn.clone(), txn_args.clone())
+                .await?;
 
             let row = ReportRow {
                 account_id: for_account.clone(),
@@ -242,7 +244,9 @@ impl TTA {
 
         while let Some(txn) = rx.recv().await {
             let txn_args = decode_args(txn.clone());
-            let ft_amounts = self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+            let ft_amounts = self
+                .get_ft_amounts(for_account.clone(), txn.clone(), txn_args.clone())
+                .await?;
 
             let row = ReportRow {
                 account_id: for_account.clone(),
@@ -259,7 +263,7 @@ impl TTA {
                 ft_currency_out: ft_amounts.ft_currency_out,
                 ft_amount_in: ft_amounts.ft_amount_in,
                 ft_currency_in: ft_amounts.ft_currency_in,
-                to_account: txn.t_receiver_account_id.clone(),
+                to_account: txn.r_receiver_account_id.clone(),
                 amount_staked: 0.0,
                 onchain_usdc_balance: 0.0,
                 onchain_usdt_balance: 0.0,
@@ -290,7 +294,9 @@ impl TTA {
 
         while let Some(txn) = rx.recv().await {
             let txn_args = decode_args(txn.clone());
-            let ft_amounts = self.get_ft_amounts(txn.clone(), txn_args.clone()).await?;
+            let ft_amounts = self
+                .get_ft_amounts(for_account.clone(), txn.clone(), txn_args.clone())
+                .await?;
             let row = ReportRow {
                 account_id: for_account.clone(),
                 date: get_transaction_date(txn.clone()),
@@ -306,7 +312,7 @@ impl TTA {
                 ft_currency_out: ft_amounts.ft_currency_out,
                 ft_amount_in: ft_amounts.ft_amount_in,
                 ft_currency_in: ft_amounts.ft_currency_in,
-                to_account: txn.t_receiver_account_id.clone(),
+                to_account: txn.r_receiver_account_id.clone(),
                 amount_staked: 0.0,
                 onchain_usdc_balance: 0.0,
                 onchain_usdt_balance: 0.0,
@@ -317,7 +323,12 @@ impl TTA {
         Ok(report)
     }
 
-    async fn get_ft_amounts(&self, txn: Transaction, txn_args: TaArgs) -> Result<FtAmounts> {
+    async fn get_ft_amounts(
+        &self,
+        report_for_account: String,
+        txn: Transaction,
+        txn_args: TaArgs,
+    ) -> Result<FtAmounts> {
         let method_name = match txn_args.clone().method_name {
             Some(method_name) => method_name,
             None => "".to_string(),
@@ -358,16 +369,44 @@ impl TTA {
                 ),
             };
 
-            let ft_amounts = FtAmounts {
-                ft_amount_out: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
-                ft_currency_out: Some(metadata.symbol),
-                ft_amount_in: None,
-                ft_currency_in: None,
-                from_account: txn.ara_receipt_predecessor_account_id,
-                to_account: args.receiver_id.to_string(),
-            };
-
-            res = ft_amounts;
+            if args.receiver_id.to_string() == report_for_account {
+                // credit
+                res = FtAmounts {
+                    ft_amount_out: None,
+                    ft_currency_out: None,
+                    ft_amount_in: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
+                    ft_currency_in: Some(metadata.symbol),
+                    from_account: txn.ara_receipt_predecessor_account_id,
+                    to_account: args.receiver_id.to_string(),
+                };
+            } else {
+                // debit
+                res = FtAmounts {
+                    ft_amount_out: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
+                    ft_currency_out: Some(metadata.symbol),
+                    ft_amount_in: None,
+                    ft_currency_in: None,
+                    from_account: txn.ara_receipt_predecessor_account_id,
+                    to_account: args.receiver_id.to_string(),
+                };
+            }
+        } else if method_name == "ft_transfer_call" {
+            // todo!("ft_transfer_call")
+        } else if method_name == "swap" {
+            // todo!("swap")
+        } else if method_name == "withdraw"
+            && txn
+                .clone()
+                .r_receiver_account_id
+                .ends_with(".factory.bridge.near")
+        {
+            // todo!("withdraw")
+        } else if method_name == "near_deposit" {
+            // todo!("near_deposit")
+        } else if method_name == "near_withdraw" {
+            // -wnear -> +near. near might come with a transfer call, only minus wnear
+            // needs further research
+            // todo!("near_withdraw")
         }
 
         Ok(res)
