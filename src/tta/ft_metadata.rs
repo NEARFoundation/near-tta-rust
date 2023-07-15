@@ -3,8 +3,8 @@ use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryRequest, RpcQueryResponse};
 use near_primitives::{
     types::{
-        AccountId, BlockReference,
-        Finality::{self, Final},
+        BlockReference,
+        Finality::{self},
         FunctionArgs,
     },
     views::{CallResult, QueryRequest},
@@ -12,7 +12,7 @@ use near_primitives::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::info;
+
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct FtMetadata {

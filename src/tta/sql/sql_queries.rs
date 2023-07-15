@@ -4,7 +4,7 @@ use anyhow::Result;
 use sqlx::{types::Decimal, Pool, Postgres};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 use super::models::Transaction;
 

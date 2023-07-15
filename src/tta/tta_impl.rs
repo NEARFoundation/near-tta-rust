@@ -1,6 +1,5 @@
 use std::{
-    cmp,
-    collections::{self, HashSet},
+    collections::{HashSet},
     fs::File,
     sync::Arc,
     vec,
@@ -15,7 +14,7 @@ use chrono::{NaiveDateTime, Utc};
 use csv::WriterBuilder;
 use num_traits::{cast::ToPrimitive, Float, Pow};
 use tokio::sync::{mpsc::channel, Mutex};
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 use super::{
     ft_metadata::{FtMetadata, FtMetadataCache},
@@ -215,9 +214,9 @@ impl TTA {
                     .as_ref()
                     .map(|ft_amounts| {
                         (
-                            ft_amounts.ft_amount_out.clone(),
+                            ft_amounts.ft_amount_out,
                             ft_amounts.ft_currency_out.clone(),
-                            ft_amounts.ft_amount_in.clone(),
+                            ft_amounts.ft_amount_in,
                             ft_amounts.ft_currency_in.clone(),
                             ft_amounts.to_account.clone(),
                         )
@@ -359,9 +358,9 @@ impl TTA {
                     .as_ref()
                     .map(|ft_amounts| {
                         (
-                            ft_amounts.ft_amount_out.clone(),
+                            ft_amounts.ft_amount_out,
                             ft_amounts.ft_currency_out.clone(),
-                            ft_amounts.ft_amount_in.clone(),
+                            ft_amounts.ft_amount_in,
                             ft_amounts.ft_currency_in.clone(),
                             ft_amounts.to_account.clone(),
                         )
@@ -478,7 +477,7 @@ impl TTA {
                     ft_amount_out: None,
                     ft_currency_out: None,
                     ft_amount_in: Some(deposit),
-                    ft_currency_in: Some(token_n_metadata.metadata.symbol.clone()),
+                    ft_currency_in: Some(token_n_metadata.metadata.symbol),
                     from_account: txn.ara_receipt_predecessor_account_id.clone(),
                     to_account: txn.ara_receipt_predecessor_account_id.clone(),
                 })
@@ -518,7 +517,7 @@ impl TTA {
 
         Ok(TokenAndMetadata {
             token_id,
-            metadata: metadata.clone(),
+            metadata,
         })
     }
 }

@@ -8,10 +8,10 @@ use axum::{
 use chrono::DateTime;
 use dotenvy::dotenv;
 use hyper::StatusCode;
-use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL, NEAR_MAINNET_RPC_URL};
+use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 use tokio::sync::Mutex;
 use tracing::*;
 use tracing_subscriber::FmtSubscriber;
