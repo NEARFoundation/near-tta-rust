@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashSet},
-    fs::File,
-    sync::Arc,
-    vec,
-};
+use std::{collections::HashSet, fs::File, sync::Arc, vec};
 
 use anyhow::{bail, Context, Result};
 use near_jsonrpc_client::JsonRpcClient;
@@ -18,17 +13,12 @@ use tracing::{error, info, instrument};
 
 use super::{
     ft_metadata::{FtMetadata, FtMetadataCache},
-    models::{FtAmounts, MethodName, ReportRow},
+    models::{FtAmounts, FtTransfer, MethodName, ReportRow, Swap, WithdrawFromBridge},
     sql::{
-        models::{FtTransfer, TaArgs, Transaction, WithdrawFromBridge},
+        models::{TaArgs, Transaction},
         sql_queries::SqlClient,
     },
 };
-
-struct TokenAndMetadata {
-    token_id: String,
-    metadata: FtMetadata,
-}
 
 #[derive(Debug, Clone)]
 pub struct TTA {
@@ -271,8 +261,6 @@ impl TTA {
         });
 
         while let Some(txn) = rx.recv().await {
-            info!(?txn.ara_action_kind, "Got txn");
-
             if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
                 continue;
             }
@@ -409,27 +397,24 @@ impl TTA {
 
         let res = match method_name {
             MethodName::FtTransfer => {
-                let token_n_metadata = self.get_token_and_metadata(&txn).await?;
+                let metadata = self.get_metadata(&txn.r_receiver_account_id).await?;
 
                 let ft_transfer_args = serde_json::from_str::<FtTransfer>(&function_call_args)
                     .context(format!("Invalid ft_transfer args {:?}", function_call_args))?;
-                let amount = safe_divide_u128(
-                    ft_transfer_args.amount.0,
-                    token_n_metadata.metadata.decimals as u32,
-                );
+                let amount = safe_divide_u128(ft_transfer_args.amount.0, metadata.decimals as u32);
                 if is_incoming {
                     Some(FtAmounts {
                         ft_amount_out: None,
                         ft_currency_out: None,
                         ft_amount_in: Some(amount),
-                        ft_currency_in: Some(token_n_metadata.metadata.symbol),
+                        ft_currency_in: Some(metadata.symbol),
                         from_account: txn.ara_receipt_predecessor_account_id.clone(),
                         to_account: ft_transfer_args.receiver_id.to_string(),
                     })
                 } else {
                     Some(FtAmounts {
                         ft_amount_out: Some(amount),
-                        ft_currency_out: Some(token_n_metadata.metadata.symbol),
+                        ft_currency_out: Some(metadata.symbol),
                         ft_amount_in: None,
                         ft_currency_in: None,
                         from_account: txn.ara_receipt_predecessor_account_id.clone(),
@@ -443,24 +428,37 @@ impl TTA {
                 None
             }
             MethodName::Swap => {
-                // Handle "swap" here...
-                // todo!("swap")
-                None
+                let withdraw_args = serde_json::from_str::<Swap>(&function_call_args)
+                    .context(format!("Invalid withdraw args {:?}", function_call_args))?;
+
+                let metadata_out = self.get_metadata(&withdraw_args.token_out).await?;
+                let metadata_in = self.get_metadata(&withdraw_args.token_in).await?;
+
+                let amount_out =
+                    safe_divide_u128(withdraw_args.min_amount_out.0, metadata_in.decimals as u32);
+                let amount_in =
+                    safe_divide_u128(withdraw_args.amount_in.0, metadata_in.decimals as u32);
+
+                Some(FtAmounts {
+                    ft_amount_out: Some(amount_out),
+                    ft_currency_out: Some(metadata_out.symbol),
+                    ft_amount_in: Some(amount_in),
+                    ft_currency_in: Some(metadata_in.symbol),
+                    from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                    to_account: txn.ara_receipt_predecessor_account_id.clone(),
+                })
             }
             MethodName::Withdraw => {
                 if txn.r_receiver_account_id.ends_with(".factory.bridge.near") {
-                    let token_n_metadata = self.get_token_and_metadata(&txn).await?;
+                    let metadata = self.get_metadata(&txn.r_receiver_account_id).await?;
                     let withdraw_args =
                         serde_json::from_str::<WithdrawFromBridge>(&function_call_args)
                             .context(format!("Invalid withdraw args {:?}", function_call_args))?;
-                    let amount = safe_divide_u128(
-                        withdraw_args.amount.0,
-                        token_n_metadata.metadata.decimals as u32,
-                    );
+                    let amount = safe_divide_u128(withdraw_args.amount.0, metadata.decimals as u32);
 
                     Some(FtAmounts {
                         ft_amount_out: Some(amount),
-                        ft_currency_out: Some(token_n_metadata.metadata.symbol),
+                        ft_currency_out: Some(metadata.symbol),
                         ft_amount_in: None,
                         ft_currency_in: None,
                         from_account: txn.ara_receipt_predecessor_account_id.clone(),
@@ -471,13 +469,13 @@ impl TTA {
                 }
             }
             MethodName::NearDeposit => {
-                let token_n_metadata = self.get_token_and_metadata(&txn).await?;
+                let metadata = self.get_metadata(&txn.r_receiver_account_id).await?;
                 let deposit = get_near_transferred(&txn_args);
                 Some(FtAmounts {
                     ft_amount_out: None,
                     ft_currency_out: None,
                     ft_amount_in: Some(deposit),
-                    ft_currency_in: Some(token_n_metadata.metadata.symbol),
+                    ft_currency_in: Some(metadata.symbol),
                     from_account: txn.ara_receipt_predecessor_account_id.clone(),
                     to_account: txn.ara_receipt_predecessor_account_id.clone(),
                 })
@@ -500,25 +498,19 @@ impl TTA {
         Ok(res)
     }
 
-    async fn get_token_and_metadata(&self, txn: &Transaction) -> Result<TokenAndMetadata> {
-        let token_id = txn.r_receiver_account_id.clone();
-
+    async fn get_metadata(&self, token_id: &String) -> Result<FtMetadata> {
         let ft_metadata_cache = self.ft_metadata_cache.clone();
         let mut w = ft_metadata_cache.lock().await;
         let metadata = match w.assert_ft_metadata(token_id.as_str()).await {
             Ok(metadata) => metadata,
             Err(e) => bail!(
-                "Failed to get ft_metadata for token_id: {:?}, txn: {:?}, err: {:?}",
+                "Failed to get ft_metadata for token_id: {:?}, err: {:?}",
                 token_id,
-                txn,
                 e
             ),
         };
 
-        Ok(TokenAndMetadata {
-            token_id,
-            metadata,
-        })
+        Ok(metadata)
     }
 }
 

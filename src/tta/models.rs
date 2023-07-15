@@ -1,4 +1,6 @@
-
+use near_primitives::types::AccountId;
+use near_sdk::json_types::U128;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub struct ReportRow {
@@ -117,4 +119,31 @@ impl From<&str> for MethodName {
             _ => MethodName::Unsupported,
         }
     }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FtTransfer {
+    pub receiver_id: AccountId,
+    pub amount: U128,
+    pub memo: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FtTransferCall {
+    pub receiver_id: AccountId,
+    pub amount: U128,
+    pub memo: Option<String>,
+    pub msg: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Swap {
+    pub token_in: String,
+    pub amount_in: U128,
+    pub token_out: String,
+    pub min_amount_out: U128,
+}
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WithdrawFromBridge {
+    pub amount: U128,
 }
