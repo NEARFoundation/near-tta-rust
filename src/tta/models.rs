@@ -93,3 +93,28 @@ pub struct FtAmounts {
     pub from_account: String,
     pub to_account: String,
 }
+
+#[derive(Debug, PartialEq)]
+pub enum MethodName {
+    FtTransfer,
+    FtTransferCall,
+    Swap,
+    Withdraw,
+    NearDeposit,
+    NearWithdraw,
+    Unsupported,
+}
+
+impl From<&str> for MethodName {
+    fn from(s: &str) -> Self {
+        match s {
+            "ft_transfer" => MethodName::FtTransfer,
+            "ft_transfer_call" => MethodName::FtTransferCall,
+            "swap" => MethodName::Swap,
+            "withdraw" => MethodName::Withdraw,
+            "near_deposit" => MethodName::NearDeposit,
+            "near_withdraw" => MethodName::NearWithdraw,
+            _ => MethodName::Unsupported,
+        }
+    }
+}

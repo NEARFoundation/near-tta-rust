@@ -3,3 +3,4 @@
 .env
 report*
 logs*
+.DS_Store

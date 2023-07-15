@@ -6,7 +6,7 @@ use std::{
     vec,
 };
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use near_jsonrpc_client::JsonRpcClient;
 
 use crate::tta::utils::get_associated_lockup;
@@ -18,13 +18,18 @@ use tokio::sync::{mpsc::channel, Mutex};
 use tracing::{debug, error, info, instrument};
 
 use super::{
-    ft_metadata::FtMetadataCache,
-    models::{FtAmounts, ReportRow},
+    ft_metadata::{FtMetadata, FtMetadataCache},
+    models::{FtAmounts, MethodName, ReportRow},
     sql::{
-        models::{FtTransfer, TaArgs, Transaction},
+        models::{FtTransfer, TaArgs, Transaction, WithdrawFromBridge},
         sql_queries::SqlClient,
     },
 };
+
+struct TokenAndMetadata {
+    token_id: String,
+    metadata: FtMetadata,
+}
 
 #[derive(Debug, Clone)]
 pub struct TTA {
@@ -395,83 +400,126 @@ impl TTA {
         txn: Transaction,
         txn_args: TaArgs,
     ) -> Result<Option<FtAmounts>> {
-        let method_name = match txn_args.clone().method_name {
-            Some(method_name) => method_name,
-            None => "".to_string(),
-        };
+        let method_name = txn_args
+            .method_name
+            .as_deref()
+            .map(MethodName::from)
+            .unwrap_or(MethodName::Unsupported);
 
-        let token_id = txn.clone().r_receiver_account_id;
-        let mut res = None;
+        let function_call_args = decode_transaction_args(&txn_args);
 
-        // TODO: Switch to a match statement
-        if method_name == "ft_transfer" {
-            let ft_tranfer_args = decode_transaction_args(&txn_args);
-            let args = serde_json::from_str::<FtTransfer>(&ft_tranfer_args);
-            let args = match args {
-                Ok(args) => args,
-                Err(e) => bail!(
-                    "Invalid ft_transfer args {:?}, err: {:?}",
-                    ft_tranfer_args,
-                    e,
-                ),
-            };
+        let res = match method_name {
+            MethodName::FtTransfer => {
+                let token_n_metadata = self.get_token_and_metadata(&txn).await?;
 
-            let ft_metadata_cache = self.ft_metadata_cache.clone();
-            let mut w = ft_metadata_cache.lock().await;
-            let metadata = match w.assert_ft_metadata(token_id.as_str()).await {
-                Ok(metadata) => metadata,
-                Err(e) => bail!(
-                    "Failed to get ft_metadata for token_id: {:?}, txn: {:?}, err: {:?}",
-                    token_id,
-                    txn,
-                    e
-                ),
-            };
+                let ft_transfer_args = serde_json::from_str::<FtTransfer>(&function_call_args)
+                    .context(format!("Invalid ft_transfer args {:?}", function_call_args))?;
+                let amount = safe_divide_u128(
+                    ft_transfer_args.amount.0,
+                    token_n_metadata.metadata.decimals as u32,
+                );
+                if is_incoming {
+                    Some(FtAmounts {
+                        ft_amount_out: None,
+                        ft_currency_out: None,
+                        ft_amount_in: Some(amount),
+                        ft_currency_in: Some(token_n_metadata.metadata.symbol),
+                        from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                        to_account: ft_transfer_args.receiver_id.to_string(),
+                    })
+                } else {
+                    Some(FtAmounts {
+                        ft_amount_out: Some(amount),
+                        ft_currency_out: Some(token_n_metadata.metadata.symbol),
+                        ft_amount_in: None,
+                        ft_currency_in: None,
+                        from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                        to_account: ft_transfer_args.receiver_id.to_string(),
+                    })
+                }
+            }
+            MethodName::FtTransferCall => {
+                // Handle "ft_transfer_call" here...
+                // todo!("ft_transfer_call")
+                None
+            }
+            MethodName::Swap => {
+                // Handle "swap" here...
+                // todo!("swap")
+                None
+            }
+            MethodName::Withdraw => {
+                if txn.r_receiver_account_id.ends_with(".factory.bridge.near") {
+                    let token_n_metadata = self.get_token_and_metadata(&txn).await?;
+                    let withdraw_args =
+                        serde_json::from_str::<WithdrawFromBridge>(&function_call_args)
+                            .context(format!("Invalid withdraw args {:?}", function_call_args))?;
+                    let amount = safe_divide_u128(
+                        withdraw_args.amount.0,
+                        token_n_metadata.metadata.decimals as u32,
+                    );
 
-            if is_incoming {
-                // credit
-                res = Some(FtAmounts {
+                    Some(FtAmounts {
+                        ft_amount_out: Some(amount),
+                        ft_currency_out: Some(token_n_metadata.metadata.symbol),
+                        ft_amount_in: None,
+                        ft_currency_in: None,
+                        from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                        to_account: txn.ara_receipt_predecessor_account_id.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+            MethodName::NearDeposit => {
+                let token_n_metadata = self.get_token_and_metadata(&txn).await?;
+                let deposit = get_near_transferred(&txn_args);
+                Some(FtAmounts {
                     ft_amount_out: None,
                     ft_currency_out: None,
-                    ft_amount_in: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
-                    ft_currency_in: Some(metadata.symbol),
-                    from_account: txn.ara_receipt_predecessor_account_id,
-                    to_account: args.receiver_id.to_string(),
-                });
-            } else {
-                // debit
-                res = Some(FtAmounts {
-                    ft_amount_out: Some(safe_divide_u128(args.amount.0, metadata.decimals as u32)),
-                    ft_currency_out: Some(metadata.symbol),
-                    ft_amount_in: None,
-                    ft_currency_in: None,
-                    from_account: txn.ara_receipt_predecessor_account_id,
-                    to_account: args.receiver_id.to_string(),
-                });
+                    ft_amount_in: Some(deposit),
+                    ft_currency_in: Some(token_n_metadata.metadata.symbol.clone()),
+                    from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                    to_account: txn.ara_receipt_predecessor_account_id.clone(),
+                })
             }
-            if token_id == *"wrap.near" {
-                info!("test");
+            MethodName::NearWithdraw => {
+                // -wnear -> +near. near might come with a transfer call, only minus wnear
+                // needs further research
+                // todo!("near_withdraw")
+                None
             }
-        } else if method_name == "ft_transfer_call" {
-            // todo!("ft_transfer_call")
-        } else if method_name == "swap" {
-            // todo!("swap")
-        } else if method_name == "withdraw"
-            && txn
-                .clone()
-                .r_receiver_account_id
-                .ends_with(".factory.bridge.near")
-        {
-            // todo!("withdraw")
-        } else if method_name == "near_deposit" {
-            // todo!("near_deposit")
-        } else if method_name == "near_withdraw" {
-            // -wnear -> +near. near might come with a transfer call, only minus wnear
-            // needs further research
-            // todo!("near_withdraw")
-        }
+            MethodName::Unsupported => {
+                // info!(
+                //     "Unsupported method_name: {:?} and receiver: {:?}",
+                //     method_name, txn.r_receiver_account_id
+                // );
+                None
+            }
+        };
 
         Ok(res)
+    }
+
+    async fn get_token_and_metadata(&self, txn: &Transaction) -> Result<TokenAndMetadata> {
+        let token_id = txn.r_receiver_account_id.clone();
+
+        let ft_metadata_cache = self.ft_metadata_cache.clone();
+        let mut w = ft_metadata_cache.lock().await;
+        let metadata = match w.assert_ft_metadata(token_id.as_str()).await {
+            Ok(metadata) => metadata,
+            Err(e) => bail!(
+                "Failed to get ft_metadata for token_id: {:?}, txn: {:?}, err: {:?}",
+                token_id,
+                txn,
+                e
+            ),
+        };
+
+        Ok(TokenAndMetadata {
+            token_id,
+            metadata: metadata.clone(),
+        })
     }
 }
 

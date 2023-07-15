@@ -193,6 +193,10 @@ pub struct Swap {
     pub token_out: String,
     pub min_amount_out: U128,
 }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WithdrawFromBridge {
+    pub amount: U128,
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
