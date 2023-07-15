@@ -8,7 +8,10 @@ use base64::{engine::general_purpose, Engine as _};
 use chrono::{NaiveDateTime, Utc};
 use csv::WriterBuilder;
 use num_traits::{cast::ToPrimitive, Float, Pow};
-use tokio::sync::{mpsc::channel, Mutex};
+use tokio::sync::{
+    mpsc::{channel, Sender},
+    Mutex,
+};
 use tracing::{error, info, instrument};
 
 use super::{
@@ -19,6 +22,42 @@ use super::{
         sql_queries::SqlClient,
     },
 };
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum TransactionType {
+    Incoming,
+    FtIncoming,
+    Outgoing,
+}
+
+impl TransactionType {
+    async fn get_transaction(
+        self,
+        client: &SqlClient,
+        accounts: HashSet<String>,
+        start_date: u128,
+        end_date: u128,
+        tx: Sender<Transaction>,
+    ) -> Result<()> {
+        match self {
+            TransactionType::Incoming => {
+                client
+                    .get_incoming_txns(accounts, start_date, end_date, tx)
+                    .await
+            }
+            TransactionType::FtIncoming => {
+                client
+                    .get_ft_incoming_txns(accounts, start_date, end_date, tx)
+                    .await
+            }
+            TransactionType::Outgoing => {
+                client
+                    .get_outgoing_txns(accounts, start_date, end_date, tx)
+                    .await
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TTA {
@@ -64,10 +103,16 @@ impl TTA {
             let task_incoming = tokio::spawn({
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
-                let a = acc.clone();
+                let for_account = acc.clone();
                 async move {
                     match t
-                        .handle_incoming_txns(a, wallets_for_account, start_date, end_date)
+                        .handle_txns(
+                            TransactionType::Incoming,
+                            for_account,
+                            wallets_for_account,
+                            start_date,
+                            end_date,
+                        )
                         .await
                     {
                         Ok(txns) => Ok(txns),
@@ -79,11 +124,16 @@ impl TTA {
             let task_ft_incoming = tokio::spawn({
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
-                let a = acc.clone();
-
+                let for_account = acc.clone();
                 async move {
                     match t
-                        .handle_ft_incoming_txns(a, wallets_for_account, start_date, end_date)
+                        .handle_txns(
+                            TransactionType::FtIncoming,
+                            for_account,
+                            wallets_for_account,
+                            start_date,
+                            end_date,
+                        )
                         .await
                     {
                         Ok(txns) => Ok(txns),
@@ -96,10 +146,15 @@ impl TTA {
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let a = acc.clone();
-
                 async move {
                     match t
-                        .handle_outgoing_txns(a, wallets_for_account, start_date, end_date)
+                        .handle_txns(
+                            TransactionType::Outgoing,
+                            a,
+                            wallets_for_account,
+                            start_date,
+                            end_date,
+                        )
                         .await
                     {
                         Ok(txns) => Ok(txns),
@@ -167,9 +222,9 @@ impl TTA {
         Ok(())
     }
 
-    // handle_incoming_txns handles incoming transactions to the given accounts.
-    async fn handle_incoming_txns(
+    async fn handle_txns(
         self,
+        txn_type: TransactionType,
         for_account: String,
         accounts: HashSet<String>,
         start_date: u128,
@@ -182,8 +237,8 @@ impl TTA {
         tokio::spawn({
             let a = accounts.clone();
             async move {
-                t.sql_client
-                    .get_incoming_txns(a, start_date, end_date, tx)
+                txn_type
+                    .get_transaction(&t.sql_client, a, start_date, end_date, tx)
                     .await
                     .unwrap();
             }
@@ -195,9 +250,20 @@ impl TTA {
             }
 
             let txn_args = decode_args(txn.clone())?;
-            let ft_amounts = self
-                .get_ft_amounts(true, txn.clone(), txn_args.clone())
-                .await?;
+            let ft_amounts = match self
+                .get_ft_amounts(
+                    txn_type != TransactionType::Outgoing,
+                    txn.clone(),
+                    txn_args.clone(),
+                )
+                .await
+            {
+                Ok(ft_amounts) => ft_amounts,
+                Err(e) => {
+                    error!(?e, "Error getting ft amounts");
+                    continue;
+                }
+            };
 
             let (ft_amount_out, ft_currency_out, ft_amount_in, ft_currency_in, to_account) =
                 ft_amounts
@@ -213,76 +279,10 @@ impl TTA {
                     })
                     .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
 
-            let row = ReportRow {
-                account_id: for_account.clone(),
-                date: get_transaction_date(&txn),
-                method_name: get_method_name(&txn, &txn_args),
-                block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
-                from_account: txn.ara_receipt_predecessor_account_id.clone(),
-                block_height: txn.b_block_height.to_u128().unwrap(),
-                args: decode_transaction_args(&txn_args),
-                transaction_hash: txn.t_transaction_hash.clone(),
-                amount_transferred: get_near_transferred(&txn_args),
-                currency_transferred: "NEAR".to_string(),
-                ft_amount_out,
-                ft_currency_out,
-                ft_amount_in,
-                ft_currency_in,
-                to_account,
-                amount_staked: 0.0,
-                onchain_usdc_balance: 0.0,
-                onchain_usdt_balance: 0.0,
+            let multiplier = match txn_type {
+                TransactionType::Outgoing => -1.0,
+                _ => 1.0,
             };
-            report.push(row)
-        }
-        Ok(report)
-    }
-
-    // handle_ft+incoming_txns handles incoming fungible token transactions for the given accounts.
-    async fn handle_ft_incoming_txns(
-        self,
-        for_account: String,
-        accounts: HashSet<String>,
-        start_date: u128,
-        end_date: u128,
-    ) -> Result<Vec<ReportRow>> {
-        let mut report = vec![];
-        let (tx, mut rx) = channel(100);
-
-        let t = self.clone();
-        tokio::spawn({
-            let a = accounts.clone();
-            async move {
-                t.sql_client
-                    .get_ft_incoming_txns(a, start_date, end_date, tx)
-                    .await
-                    .unwrap();
-            }
-        });
-
-        while let Some(txn) = rx.recv().await {
-            if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
-                continue;
-            }
-
-            let txn_args = decode_args(txn.clone())?;
-            let ft_amounts = self
-                .get_ft_amounts(true, txn.clone(), txn_args.clone())
-                .await?;
-
-            let (ft_amount_out, ft_currency_out, ft_amount_in, ft_currency_in, to_account) =
-                ft_amounts
-                    .as_ref()
-                    .map(|ft_amounts| {
-                        (
-                            ft_amounts.ft_amount_out,
-                            ft_amounts.ft_currency_out.clone(),
-                            ft_amounts.ft_amount_in,
-                            ft_amounts.ft_currency_in.clone(),
-                            ft_amounts.to_account.clone(),
-                        )
-                    })
-                    .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
 
             let row = ReportRow {
                 account_id: for_account.clone(),
@@ -293,7 +293,7 @@ impl TTA {
                 block_height: txn.b_block_height.to_u128().unwrap(),
                 args: decode_transaction_args(&txn_args),
                 transaction_hash: txn.t_transaction_hash.clone(),
-                amount_transferred: get_near_transferred(&txn_args),
+                amount_transferred: get_near_transferred(&txn_args) * multiplier,
                 currency_transferred: "NEAR".to_string(),
                 ft_amount_out,
                 ft_currency_out,
@@ -307,77 +307,7 @@ impl TTA {
 
             report.push(row)
         }
-        Ok(report)
-    }
 
-    async fn handle_outgoing_txns(
-        self,
-        for_account: String,
-        accounts: HashSet<String>,
-        start_date: u128,
-        end_date: u128,
-    ) -> Result<Vec<ReportRow>> {
-        let mut report = vec![];
-        let (tx, mut rx) = channel(100);
-
-        let t = self.clone();
-        tokio::spawn({
-            let a = accounts.clone();
-            async move {
-                t.sql_client
-                    .get_outgoing_txns(a, start_date, end_date, tx)
-                    .await
-                    .unwrap();
-            }
-        });
-
-        while let Some(txn) = rx.recv().await {
-            if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
-                continue;
-            }
-
-            let txn_args = decode_args(txn.clone())?;
-            let ft_amounts = self
-                .get_ft_amounts(false, txn.clone(), txn_args.clone())
-                .await?;
-
-            let (ft_amount_out, ft_currency_out, ft_amount_in, ft_currency_in, to_account) =
-                ft_amounts
-                    .as_ref()
-                    .map(|ft_amounts| {
-                        (
-                            ft_amounts.ft_amount_out,
-                            ft_amounts.ft_currency_out.clone(),
-                            ft_amounts.ft_amount_in,
-                            ft_amounts.ft_currency_in.clone(),
-                            ft_amounts.to_account.clone(),
-                        )
-                    })
-                    .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
-
-            let row = ReportRow {
-                account_id: for_account.clone(),
-                date: get_transaction_date(&txn),
-                method_name: get_method_name(&txn, &txn_args),
-                block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
-                from_account: txn.ara_receipt_predecessor_account_id.clone(),
-                block_height: txn.b_block_height.to_u128().unwrap(),
-                args: decode_transaction_args(&txn_args),
-                transaction_hash: txn.t_transaction_hash.clone(),
-                amount_transferred: get_near_transferred(&txn_args) * -1.0,
-                currency_transferred: "NEAR".to_string(),
-                ft_amount_out,
-                ft_currency_out,
-                ft_amount_in,
-                ft_currency_in,
-                to_account,
-                amount_staked: 0.0,
-                onchain_usdc_balance: 0.0,
-                onchain_usdt_balance: 0.0,
-            };
-
-            report.push(row)
-        }
         Ok(report)
     }
 
