@@ -16,7 +16,9 @@ use tracing::{error, info, instrument};
 
 use super::{
     ft_metadata::{FtMetadata, FtMetadataCache},
-    models::{FtAmounts, FtTransfer, MethodName, ReportRow, Swap, WithdrawFromBridge},
+    models::{
+        FtAmounts, FtTransfer, FtTransferCall, MethodName, ReportRow, Swap, WithdrawFromBridge,
+    },
     sql::{
         models::{TaArgs, Transaction},
         sql_queries::SqlClient,
@@ -353,9 +355,20 @@ impl TTA {
                 }
             }
             MethodName::FtTransferCall => {
-                // Handle "ft_transfer_call" here...
-                // todo!("ft_transfer_call")
-                None
+                let metadata = self.get_metadata(&txn.r_receiver_account_id).await?;
+                let ft_transfer_args = serde_json::from_str::<FtTransferCall>(&function_call_args)
+                    .context(format!("Invalid ft_transfer args {:?}", function_call_args))?;
+                let amount = safe_divide_u128(ft_transfer_args.amount.0, metadata.decimals as u32);
+
+                // No need to handle incoming. it comes as ft_transfer in case of swap.
+                Some(FtAmounts {
+                    ft_amount_out: Some(amount),
+                    ft_currency_out: Some(metadata.symbol),
+                    ft_amount_in: None,
+                    ft_currency_in: None,
+                    from_account: txn.ara_receipt_predecessor_account_id,
+                    to_account: ft_transfer_args.receiver_id.to_string(),
+                })
             }
             MethodName::Swap => {
                 let withdraw_args = serde_json::from_str::<Swap>(&function_call_args)
@@ -411,10 +424,19 @@ impl TTA {
                 })
             }
             MethodName::NearWithdraw => {
-                // -wnear -> +near. near might come with a transfer call, only minus wnear
-                // needs further research
-                // todo!("near_withdraw")
-                None
+                let metadata = self.get_metadata(&txn.r_receiver_account_id).await?;
+                let withdraw_args = serde_json::from_str::<WithdrawFromBridge>(&function_call_args)
+                    .context(format!("Invalid withdraw args {:?}", function_call_args))?;
+                let amount = safe_divide_u128(withdraw_args.amount.0, metadata.decimals as u32);
+
+                Some(FtAmounts {
+                    ft_amount_out: Some(amount),
+                    ft_currency_out: Some(metadata.symbol),
+                    ft_amount_in: None,
+                    ft_currency_in: None,
+                    from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                    to_account: txn.ara_receipt_predecessor_account_id.to_string(),
+                })
             }
             MethodName::Unsupported => {
                 // info!(
