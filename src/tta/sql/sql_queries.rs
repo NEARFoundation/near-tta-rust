@@ -306,7 +306,7 @@ impl SqlClient {
                     LEFT JOIN EXECUTION_OUTCOMES EO ON EO.RECEIPT_ID = R.RECEIPT_ID
             WHERE eo.status IN ('SUCCESS_RECEIPT_ID', 'SUCCESS_VALUE')
                 AND ARA.action_kind = 'FUNCTION_CALL'
-                AND (ARA.args -> 'args_json' ->> 'receiver_id' = ANY($1) OR ARA.args -> 'args_json' ->> 'account_id' = ANY($1))
+                AND ARA.args -> 'args_json' ->> 'receiver_id' = ANY($1)
                 AND B.BLOCK_TIMESTAMP >= $2
                 AND B.BLOCK_TIMESTAMP < $3
                 AND NOT EXISTS (

@@ -2,6 +2,7 @@ use std::{collections::HashSet, fs::File, sync::Arc, vec};
 
 use anyhow::{bail, Context, Result};
 use near_jsonrpc_client::JsonRpcClient;
+use near_sdk::{ONE_NEAR, ONE_YOCTO};
 
 use crate::tta::utils::get_associated_lockup;
 use base64::{engine::general_purpose, Engine as _};
@@ -12,7 +13,7 @@ use tokio::sync::{
     mpsc::{channel, Sender},
     Mutex,
 };
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use super::{
     ft_metadata::{FtMetadata, FtMetadataCache},
@@ -251,7 +252,15 @@ impl TTA {
                 continue;
             }
 
-            let txn_args = decode_args(txn.clone())?;
+            let txn_args = decode_args(&txn)?;
+
+            // Skipping gas refunds
+            if get_near_transferred(&txn_args) < 0.5
+                && txn.ara_receipt_predecessor_account_id == "system"
+            {
+                continue;
+            }
+
             let ft_amounts = match self
                 .get_ft_amounts(
                     txn_type != TransactionType::Outgoing,
@@ -281,10 +290,15 @@ impl TTA {
                     })
                     .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
 
-            let multiplier = match txn_type {
-                TransactionType::Outgoing => -1.0,
-                _ => 1.0,
+            let multiplier = if accounts.contains(txn.r_predecessor_account_id.as_str()) {
+                -1.0
+            } else {
+                1.0
             };
+
+            if txn.t_transaction_hash == "BRehgNJZFWSkbTywhhHvTkRhzkviYh3id5rBucqhakk8" {
+                debug!("Got txn: {:?}", txn);
+            }
 
             let row = ReportRow {
                 account_id: for_account.clone(),
@@ -306,6 +320,15 @@ impl TTA {
                 onchain_usdc_balance: 0.0,
                 onchain_usdt_balance: 0.0,
             };
+            if txn.t_transaction_hash == "BRehgNJZFWSkbTywhhHvTkRhzkviYh3id5rBucqhakk8" {
+                debug!("txn type: {:?}", txn_type);
+                debug!("Got row: {:?}", row);
+                debug!("Got row: {:?}", row.to_vec());
+                debug!(
+                    "Got NEAR transferred: {:?}",
+                    get_near_transferred(&txn_args)
+                );
+            }
 
             report.push(row)
         }
@@ -476,12 +499,11 @@ fn get_near_transferred(txn_args: &TaArgs) -> f64 {
                 Err(e) => panic!("Invalid deposit amount: {:?}, err: {:?}", deposit_str, e),
             };
 
-            // Divide by 10^24 safely
-            let amount = if deposit >= 10u128.pow(24) {
-                deposit as f64 / 10f64.powi(24)
-            } else {
-                0.0
-            };
+            let nears = deposit / ONE_NEAR; // integer division
+            let remainder = deposit % ONE_NEAR; // remainder
+
+            // Convert the nears and remainder to f64
+            let amount = nears as f64 + (remainder as f64 / ONE_NEAR as f64);
 
             // filter out small amounts
             (amount >= 0.0001).then_some(amount)
@@ -494,7 +516,7 @@ fn safe_divide_u128(a: u128, decimals: u32) -> f64 {
     (a / divisor) as f64 + (a % divisor) as f64 / divisor as f64
 }
 
-fn decode_args(txn: Transaction) -> Result<TaArgs> {
+fn decode_args(txn: &Transaction) -> Result<TaArgs> {
     match serde_json::from_value::<TaArgs>(txn.clone().ara_args) {
         Ok(args) => Ok(args),
         Err(e) => bail!("Invalid args {:?}, err: {:?}", txn.ara_args, e),
@@ -544,7 +566,7 @@ fn get_transaction_date(txn: &Transaction) -> String {
 }
 
 fn assert_moves_token(row: ReportRow) -> Option<ReportRow> {
-    if row.amount_transferred == 0.0
+    if row.amount_transferred == 0.000000
         && row.ft_amount_out.is_none()
         && row.ft_amount_in.is_none()
         && row.amount_staked == 0.0
