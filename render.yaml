@@ -10,3 +10,4 @@ services:
     pullRequestPreviewsEnabled: true
     envVars:
       - key: DATABASE_URL
+        sync: false
