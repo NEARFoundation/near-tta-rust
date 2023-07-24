@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: tta-api
+    runtime: rust
+    region: frankfurt
+    plan: starter
+    branch: main
+    buildCommand: cargo build --release
+    startCommand: cargo run --release
+    pullRequestPreviewsEnabled: true
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: indexer
+          property: connectionString
