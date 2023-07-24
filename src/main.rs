@@ -23,15 +23,18 @@ pub mod tta;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenv()?;
+    info!("Starting up");
+
+    match dotenv() {
+        Ok(_) => info!("Loaded .env file"),
+        Err(e) => warn!("Failed to load .env file: {}", e),
+    }
 
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::DEBUG)
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)?;
-
-    info!("Starting up");
 
     let pool = PgPoolOptions::new()
         .max_connections(10)
