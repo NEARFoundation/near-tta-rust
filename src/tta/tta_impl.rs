@@ -1,18 +1,20 @@
-use std::{collections::HashSet, fs::File, sync::Arc, vec};
+use std::{collections::HashSet, sync::Arc, vec};
 
 use anyhow::{bail, Context, Result};
-use near_jsonrpc_client::JsonRpcClient;
-use near_sdk::{ONE_NEAR, ONE_YOCTO};
+
+
+use near_sdk::{ONE_NEAR};
 
 use crate::tta::utils::get_associated_lockup;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{NaiveDateTime, Utc};
-use csv::WriterBuilder;
-use num_traits::{cast::ToPrimitive, Float, Pow};
+
+use num_traits::{cast::ToPrimitive, Pow};
 use tokio::sync::{
     mpsc::{channel, Sender},
     Mutex,
 };
+
 use tracing::{debug, error, info, instrument};
 
 use super::{
@@ -65,19 +67,13 @@ impl TransactionType {
 #[derive(Debug, Clone)]
 pub struct TTA {
     sql_client: SqlClient,
-    near_client: JsonRpcClient,
     ft_metadata_cache: Arc<Mutex<FtMetadataCache>>,
 }
 
 impl TTA {
-    pub fn new(
-        sql_client: SqlClient,
-        near_client: JsonRpcClient,
-        ft_metadata_cache: Arc<Mutex<FtMetadataCache>>,
-    ) -> Self {
+    pub fn new(sql_client: SqlClient, ft_metadata_cache: Arc<Mutex<FtMetadataCache>>) -> Self {
         Self {
             sql_client,
-            near_client,
             ft_metadata_cache,
         }
     }
@@ -88,7 +84,7 @@ impl TTA {
         start_date: u128,
         end_date: u128,
         accounts: HashSet<String>,
-    ) -> anyhow::Result<()> {
+    ) -> Result<Vec<ReportRow>> {
         info!(?start_date, ?end_date, ?accounts, "Got request");
 
         let mut join_handles = vec![];
@@ -210,19 +206,7 @@ impl TTA {
             report.len()
         );
 
-        let file = File::create("report.csv")?;
-        let mut writer = WriterBuilder::new().from_writer(file);
-
-        writer.write_record(ReportRow::get_vec_headers())?;
-        for record in report {
-            writer.write_record(record.to_vec())?;
-        }
-
-        writer.flush()?;
-
-        info!("Done");
-
-        Ok(())
+        Ok(report)
     }
 
     async fn handle_txns(
