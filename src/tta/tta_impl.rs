@@ -11,7 +11,7 @@ use chrono::{NaiveDateTime, Utc};
 use num_traits::cast::ToPrimitive;
 use tokio::sync::{
     mpsc::{channel, Sender},
-    Mutex,
+    Mutex, Semaphore,
 };
 
 use tracing::{debug, error, info, instrument};
@@ -67,13 +67,19 @@ impl TransactionType {
 pub struct TTA {
     sql_client: SqlClient,
     ft_metadata_cache: Arc<Mutex<FtMetadataCache>>,
+    semaphore: Arc<Semaphore>,
 }
 
 impl TTA {
-    pub fn new(sql_client: SqlClient, ft_metadata_cache: Arc<Mutex<FtMetadataCache>>) -> Self {
+    pub fn new(
+        sql_client: SqlClient,
+        ft_metadata_cache: Arc<Mutex<FtMetadataCache>>,
+        semaphore: Arc<Semaphore>,
+    ) -> Self {
         Self {
             sql_client,
             ft_metadata_cache,
+            semaphore,
         }
     }
 
@@ -99,10 +105,16 @@ impl TTA {
             wallets_for_account.insert(lockup);
 
             let task_incoming = tokio::spawn({
+                let s = self.semaphore.clone().acquire_owned().await?;
+                info!(
+                    "Acquired, remaining: {:?}",
+                    self.semaphore.available_permits()
+                );
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let for_account = acc.clone();
                 async move {
+                    let _s = s;
                     match t
                         .handle_txns(
                             TransactionType::Incoming,
@@ -120,10 +132,16 @@ impl TTA {
             });
 
             let task_ft_incoming = tokio::spawn({
+                let s = self.semaphore.clone().acquire_owned().await?;
+                info!(
+                    "Acquired, remaining: {:?}",
+                    self.semaphore.available_permits()
+                );
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let for_account = acc.clone();
                 async move {
+                    let _s = s;
                     match t
                         .handle_txns(
                             TransactionType::FtIncoming,
@@ -141,10 +159,17 @@ impl TTA {
             });
 
             let task_outgoing = tokio::spawn({
+                let s = self.semaphore.clone().acquire_owned().await?;
+                info!(
+                    "Acquired, remaining: {:?}",
+                    self.semaphore.available_permits()
+                );
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let a = acc.clone();
                 async move {
+                    let _s = s;
+
                     match t
                         .handle_txns(
                             TransactionType::Outgoing,

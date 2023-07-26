@@ -20,7 +20,7 @@ use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
 use std::{collections::HashSet, sync::Arc};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::*;
 use tracing_subscriber::FmtSubscriber;
 use tta::tta_impl::TTA;
@@ -45,15 +45,16 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(30)
         .connect(env!("DATABASE_URL"))
         .await?;
 
     let sql_client = SqlClient::new(pool);
     let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
     let ft_metadata_cache = Arc::new(Mutex::new(FtMetadataCache::new(near_client)));
+    let semaphore = Arc::new(Semaphore::new(30));
 
-    let tta_service = TTA::new(sql_client, ft_metadata_cache.clone());
+    let tta_service = TTA::new(sql_client, ft_metadata_cache.clone(), semaphore);
 
     let trace = TraceLayer::new_for_http();
     let cors = CorsLayer::new().allow_methods(Any).allow_origin(Any);
