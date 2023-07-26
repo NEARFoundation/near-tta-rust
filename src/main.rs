@@ -2,6 +2,11 @@ use anyhow::Result;
 use axum::{response::IntoResponse, Router};
 use csv::Writer;
 use hyper::{Body, Response};
+use tower::ServiceBuilder;
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tta::models::ReportRow;
 
 use axum::{
@@ -48,12 +53,16 @@ async fn main() -> Result<()> {
     let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
     let ft_metadata_cache = Arc::new(Mutex::new(FtMetadataCache::new(near_client)));
 
-    // Start services
     let tta_service = TTA::new(sql_client, ft_metadata_cache.clone());
+
+    let trace = TraceLayer::new_for_http();
+    let cors = CorsLayer::new().allow_methods(Any).allow_origin(Any);
+    let middleware = ServiceBuilder::new().layer(trace).layer(cors);
 
     let app = Router::new()
         .route("/tta", get(get_txns_report))
-        .with_state(tta_service);
+        .with_state(tta_service)
+        .layer(middleware);
 
     let ip = env!("IP");
     let port = env!("PORT");

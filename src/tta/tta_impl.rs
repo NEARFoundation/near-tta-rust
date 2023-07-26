@@ -2,14 +2,13 @@ use std::{collections::HashSet, sync::Arc, vec};
 
 use anyhow::{bail, Context, Result};
 
-
-use near_sdk::{ONE_NEAR};
+use near_sdk::ONE_NEAR;
 
 use crate::tta::utils::get_associated_lockup;
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{NaiveDateTime, Utc};
 
-use num_traits::{cast::ToPrimitive, Pow};
+use num_traits::cast::ToPrimitive;
 use tokio::sync::{
     mpsc::{channel, Sender},
     Mutex,
@@ -280,10 +279,6 @@ impl TTA {
                 1.0
             };
 
-            if txn.t_transaction_hash == "BRehgNJZFWSkbTywhhHvTkRhzkviYh3id5rBucqhakk8" {
-                debug!("Got txn: {:?}", txn);
-            }
-
             let row = ReportRow {
                 account_id: for_account.clone(),
                 date: get_transaction_date(&txn),
@@ -304,15 +299,6 @@ impl TTA {
                 onchain_usdc_balance: 0.0,
                 onchain_usdt_balance: 0.0,
             };
-            if txn.t_transaction_hash == "BRehgNJZFWSkbTywhhHvTkRhzkviYh3id5rBucqhakk8" {
-                debug!("txn type: {:?}", txn_type);
-                debug!("Got row: {:?}", row);
-                debug!("Got row: {:?}", row.to_vec());
-                debug!(
-                    "Got NEAR transferred: {:?}",
-                    get_near_transferred(&txn_args)
-                );
-            }
 
             report.push(row)
         }
