@@ -98,7 +98,13 @@ async fn get_txns_report(
     let end_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.end_date)
         .unwrap()
         .into();
-    let accounts: HashSet<String> = params.accounts.split(',').map(String::from).collect();
+
+    let accounts: HashSet<String> = params
+        .accounts
+        .split(',')
+        .map(String::from)
+        .filter(|account| account != "near" && account != "system")
+        .collect();
 
     let csv_data = tta_service
         .get_txns_report(
