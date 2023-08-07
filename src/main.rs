@@ -19,10 +19,10 @@ use dotenvy::dotenv;
 use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, env, sync::Arc};
 use tokio::sync::{Mutex, Semaphore};
-use tracing::*;
-use tracing_subscriber::FmtSubscriber;
+use tracing::{*};
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use tta::tta_impl::TTA;
 
 use crate::tta::{ft_metadata::FtMetadataCache, sql::sql_queries::SqlClient};
@@ -38,9 +38,12 @@ async fn main() -> Result<()> {
         Err(e) => warn!("Failed to load .env file: {}", e),
     }
 
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
-        .finish();
+    let filter = match option_env!("LOG_LEVEL") {
+        Some(level) => EnvFilter::new(level),
+        None => EnvFilter::new("info"),
+    };
+
+    let subscriber = FmtSubscriber::builder().with_env_filter(filter).finish();
 
     tracing::subscriber::set_global_default(subscriber)?;
 

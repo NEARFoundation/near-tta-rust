@@ -14,7 +14,7 @@ use tokio::sync::{
     Mutex, Semaphore,
 };
 
-use tracing::{debug, error, info, instrument};
+use tracing::{error, info, instrument};
 
 use super::{
     ft_metadata::{FtMetadata, FtMetadataCache},
