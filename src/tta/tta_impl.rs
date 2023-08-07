@@ -105,6 +105,10 @@ impl TTA {
             wallets_for_account.insert(lockup);
 
             let task_incoming = tokio::spawn({
+                info!(
+                    "Acquiring semaphore, remaining: {:?}",
+                    self.semaphore.available_permits()
+                );
                 let s = self.semaphore.clone().acquire_owned().await?;
                 info!(
                     "Acquired, remaining: {:?}",
@@ -115,23 +119,22 @@ impl TTA {
                 let for_account = acc.clone();
                 async move {
                     let _s = s;
-                    match t
-                        .handle_txns(
-                            TransactionType::Incoming,
-                            for_account,
-                            wallets_for_account,
-                            start_date,
-                            end_date,
-                        )
-                        .await
-                    {
-                        Ok(txns) => Ok(txns),
-                        Err(e) => Err(e),
-                    }
+                    t.handle_txns(
+                        TransactionType::Incoming,
+                        for_account,
+                        wallets_for_account,
+                        start_date,
+                        end_date,
+                    )
+                    .await
                 }
             });
 
             let task_ft_incoming = tokio::spawn({
+                info!(
+                    "Acquiring semaphore, remaining: {:?}",
+                    self.semaphore.available_permits()
+                );
                 let s = self.semaphore.clone().acquire_owned().await?;
                 info!(
                     "Acquired, remaining: {:?}",
@@ -142,23 +145,22 @@ impl TTA {
                 let for_account = acc.clone();
                 async move {
                     let _s = s;
-                    match t
-                        .handle_txns(
-                            TransactionType::FtIncoming,
-                            for_account,
-                            wallets_for_account,
-                            start_date,
-                            end_date,
-                        )
-                        .await
-                    {
-                        Ok(txns) => Ok(txns),
-                        Err(e) => Err(e),
-                    }
+                    t.handle_txns(
+                        TransactionType::FtIncoming,
+                        for_account,
+                        wallets_for_account,
+                        start_date,
+                        end_date,
+                    )
+                    .await
                 }
             });
 
             let task_outgoing = tokio::spawn({
+                info!(
+                    "Acquiring semaphore, remaining: {:?}",
+                    self.semaphore.available_permits()
+                );
                 let s = self.semaphore.clone().acquire_owned().await?;
                 info!(
                     "Acquired, remaining: {:?}",
@@ -170,19 +172,14 @@ impl TTA {
                 async move {
                     let _s = s;
 
-                    match t
-                        .handle_txns(
-                            TransactionType::Outgoing,
-                            a,
-                            wallets_for_account,
-                            start_date,
-                            end_date,
-                        )
-                        .await
-                    {
-                        Ok(txns) => Ok(txns),
-                        Err(e) => Err(e),
-                    }
+                    t.handle_txns(
+                        TransactionType::Outgoing,
+                        a,
+                        wallets_for_account,
+                        start_date,
+                        end_date,
+                    )
+                    .await
                 }
             });
 
