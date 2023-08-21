@@ -104,6 +104,7 @@ pub enum MethodName {
     Withdraw,
     NearDeposit,
     NearWithdraw,
+    Mint,
     Unsupported,
 }
 
@@ -116,6 +117,7 @@ impl From<&str> for MethodName {
             "withdraw" => MethodName::Withdraw,
             "near_deposit" => MethodName::NearDeposit,
             "near_withdraw" => MethodName::NearWithdraw,
+            "mint" => MethodName::Mint,
             _ => MethodName::Unsupported,
         }
     }
@@ -145,5 +147,11 @@ pub struct Swap {
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WithdrawFromBridge {
+    pub amount: U128,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RainbowBridgeMint {
+    pub account_id: AccountId,
     pub amount: U128,
 }
