@@ -14,12 +14,13 @@ use tokio::sync::{
     Mutex, Semaphore,
 };
 
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use super::{
     ft_metadata::{FtMetadata, FtMetadataCache},
     models::{
-        FtAmounts, FtTransfer, FtTransferCall, MethodName, ReportRow, Swap, WithdrawFromBridge,
+        FtAmounts, FtTransfer, FtTransferCall, MethodName, RainbowBridgeMint, ReportRow, Swap,
+        WithdrawFromBridge,
     },
     sql::{
         models::{TaArgs, Transaction},
@@ -453,13 +454,29 @@ impl TTA {
                     to_account: txn.ara_receipt_predecessor_account_id.to_string(),
                 })
             }
-            MethodName::Unsupported => {
-                // info!(
-                //     "Unsupported method_name: {:?} and receiver: {:?}",
-                //     method_name, txn.r_receiver_account_id
-                // );
-                None
+            MethodName::Mint => {
+                let metadata = self.get_metadata(&txn.r_receiver_account_id).await?;
+
+                let bridge_mint_args =
+                    serde_json::from_str::<RainbowBridgeMint>(&function_call_args).context(
+                        format!("Invalid bridge_mint_args args {:?}", function_call_args),
+                    )?;
+                let amount = safe_divide_u128(bridge_mint_args.amount.0, metadata.decimals as u32);
+                if is_incoming {
+                    Some(FtAmounts {
+                        ft_amount_out: None,
+                        ft_currency_out: None,
+                        ft_amount_in: Some(amount),
+                        ft_currency_in: Some(metadata.symbol),
+                        from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                        to_account: bridge_mint_args.account_id.to_string(),
+                    })
+                } else {
+                    error!("Minting should always comes from the bridge");
+                    None
+                }
             }
+            MethodName::Unsupported => None,
         };
 
         Ok(res)
