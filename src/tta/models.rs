@@ -20,8 +20,7 @@ pub struct ReportRow {
     pub ft_currency_in: Option<String>,
     pub to_account: String,
     pub amount_staked: f64,
-    pub onchain_usdc_balance: f64,
-    pub onchain_usdt_balance: f64,
+    pub onchain_balance: Option<f64>,
 }
 
 // Define the extension trait
@@ -55,8 +54,7 @@ impl ReportRow {
             "ft_currency_in".to_string(),
             "to_account".to_string(),
             "amount_staked".to_string(),
-            "onchain_usdc_balance".to_string(),
-            "onchain_usdt_balance".to_string(),
+            "onchain_balance".to_string(),
         ]
     }
 
@@ -80,8 +78,8 @@ impl ReportRow {
             self.ft_currency_in.clone().unwrap_or_default(),
             self.to_account.clone(),
             self.amount_staked.to_5dp_string(),
-            self.onchain_usdc_balance.to_5dp_string(),
-            self.onchain_usdt_balance.to_5dp_string(),
+            self.onchain_balance
+                .map_or(String::new(), |v| v.to_5dp_string()),
         ]
     }
 }
@@ -100,7 +98,6 @@ pub struct FtAmounts {
 pub enum MethodName {
     FtTransfer,
     FtTransferCall,
-    Swap,
     Withdraw,
     NearDeposit,
     NearWithdraw,
@@ -113,7 +110,6 @@ impl From<&str> for MethodName {
         match s {
             "ft_transfer" => MethodName::FtTransfer,
             "ft_transfer_call" => MethodName::FtTransferCall,
-            "swap" => MethodName::Swap,
             "withdraw" => MethodName::Withdraw,
             "near_deposit" => MethodName::NearDeposit,
             "near_withdraw" => MethodName::NearWithdraw,

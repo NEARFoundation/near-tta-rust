@@ -14,10 +14,10 @@ use tokio::sync::{
     Mutex, Semaphore,
 };
 
-use tracing::{error, info, instrument, warn};
+use tracing::{error, info, instrument};
 
 use super::{
-    ft_metadata::{FtMetadata, FtMetadataCache},
+    ft_metadata::{FtMetadata, FtService},
     models::{
         FtAmounts, FtTransfer, FtTransferCall, MethodName, RainbowBridgeMint, ReportRow, Swap,
         WithdrawFromBridge,
@@ -67,19 +67,19 @@ impl TransactionType {
 #[derive(Debug, Clone)]
 pub struct TTA {
     sql_client: SqlClient,
-    ft_metadata_cache: Arc<Mutex<FtMetadataCache>>,
+    ft_service: Arc<Mutex<FtService>>,
     semaphore: Arc<Semaphore>,
 }
 
 impl TTA {
     pub fn new(
         sql_client: SqlClient,
-        ft_metadata_cache: Arc<Mutex<FtMetadataCache>>,
+        ft_service: Arc<Mutex<FtService>>,
         semaphore: Arc<Semaphore>,
     ) -> Self {
         Self {
             sql_client,
-            ft_metadata_cache,
+            ft_service,
             semaphore,
         }
     }
@@ -302,6 +302,23 @@ impl TTA {
                 1.0
             };
 
+            let mut onchain_balance = None;
+            if ft_amount_in.is_some() || ft_amount_out.is_some() {
+                let ft_service = self.ft_service.clone();
+                let mut ft_service = ft_service.lock().await;
+                onchain_balance = Some(
+                    ft_service
+                        .assert_ft_balance(
+                            &txn.r_receiver_account_id,
+                            &for_account,
+                            txn.b_block_height
+                                .to_u64()
+                                .expect("Block height too large to fit in u128"),
+                        )
+                        .await?,
+                );
+            }
+
             let row = ReportRow {
                 account_id: for_account.clone(),
                 date: get_transaction_date(&txn),
@@ -319,8 +336,7 @@ impl TTA {
                 ft_currency_in,
                 to_account,
                 amount_staked: 0.0,
-                onchain_usdc_balance: 0.0,
-                onchain_usdt_balance: 0.0,
+                onchain_balance,
             };
 
             report.push(row)
@@ -384,27 +400,6 @@ impl TTA {
                     ft_currency_in: None,
                     from_account: txn.ara_receipt_predecessor_account_id,
                     to_account: ft_transfer_args.receiver_id.to_string(),
-                })
-            }
-            MethodName::Swap => {
-                let withdraw_args = serde_json::from_str::<Swap>(&function_call_args)
-                    .context(format!("Invalid withdraw args {:?}", function_call_args))?;
-
-                let metadata_out = self.get_metadata(&withdraw_args.token_out).await?;
-                let metadata_in = self.get_metadata(&withdraw_args.token_in).await?;
-
-                let amount_out =
-                    safe_divide_u128(withdraw_args.min_amount_out.0, metadata_in.decimals as u32);
-                let amount_in =
-                    safe_divide_u128(withdraw_args.amount_in.0, metadata_in.decimals as u32);
-
-                Some(FtAmounts {
-                    ft_amount_out: Some(amount_out),
-                    ft_currency_out: Some(metadata_out.symbol),
-                    ft_amount_in: Some(amount_in),
-                    ft_currency_in: Some(metadata_in.symbol),
-                    from_account: txn.ara_receipt_predecessor_account_id.clone(),
-                    to_account: txn.ara_receipt_predecessor_account_id.clone(),
                 })
             }
             MethodName::Withdraw => {
@@ -483,8 +478,8 @@ impl TTA {
     }
 
     async fn get_metadata(&self, token_id: &String) -> Result<FtMetadata> {
-        let ft_metadata_cache = self.ft_metadata_cache.clone();
-        let mut w = ft_metadata_cache.lock().await;
+        let ft_service = self.ft_service.clone();
+        let mut w = ft_service.lock().await;
         let metadata = match w.assert_ft_metadata(token_id.as_str()).await {
             Ok(metadata) => metadata,
             Err(e) => bail!(
@@ -520,7 +515,7 @@ fn get_near_transferred(txn_args: &TaArgs) -> f64 {
         .unwrap_or(0.0)
 }
 
-fn safe_divide_u128(a: u128, decimals: u32) -> f64 {
+pub fn safe_divide_u128(a: u128, decimals: u32) -> f64 {
     let divisor = 10u128.pow(decimals);
     (a / divisor) as f64 + (a % divisor) as f64 / divisor as f64
 }
