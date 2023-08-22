@@ -89,6 +89,7 @@ struct TxnsReportParams {
     pub start_date: String,
     pub end_date: String,
     pub accounts: String,
+    pub include_balances: Option<bool>,
 }
 
 async fn get_txns_report(
@@ -109,11 +110,14 @@ async fn get_txns_report(
         .filter(|account| account != "near" && account != "system")
         .collect();
 
+    let include_balances = params.include_balances.unwrap_or(false);
+
     let csv_data = tta_service
         .get_txns_report(
             start_date.timestamp_nanos() as u128,
             end_date.timestamp_nanos() as u128,
             accounts,
+            include_balances,
         )
         .await
         .unwrap();
