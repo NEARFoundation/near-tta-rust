@@ -21,11 +21,11 @@ use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
 use std::{collections::HashSet, env, sync::Arc};
 use tokio::sync::{Mutex, Semaphore};
-use tracing::{*};
+use tracing::*;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use tta::tta_impl::TTA;
 
-use crate::tta::{ft_metadata::FtMetadataCache, sql::sql_queries::SqlClient};
+use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient};
 
 pub mod tta;
 
@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
 
     let sql_client = SqlClient::new(pool);
     let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
-    let ft_metadata_cache = Arc::new(Mutex::new(FtMetadataCache::new(near_client)));
+    let ft_metadata_cache = Arc::new(Mutex::new(FtService::new(near_client)));
     let semaphore = Arc::new(Semaphore::new(30));
 
     let tta_service = TTA::new(sql_client, ft_metadata_cache.clone(), semaphore);

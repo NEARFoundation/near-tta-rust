@@ -39,3 +39,5 @@ near-jsonrpc-client = "0.6.0"
 near-jsonrpc-primitives = "0.17.0"
 near-primitives = "0.17.0"
 tower-http = { version = "0.4.3", features = ["full"] }
+lru = "0.11.0"
+governor = "0.6.0"
