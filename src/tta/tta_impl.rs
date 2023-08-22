@@ -90,6 +90,7 @@ impl TTA {
         start_date: u128,
         end_date: u128,
         accounts: HashSet<String>,
+        include_balances: bool,
     ) -> Result<Vec<ReportRow>> {
         info!(?start_date, ?end_date, ?accounts, "Got request");
 
@@ -126,6 +127,7 @@ impl TTA {
                         wallets_for_account,
                         start_date,
                         end_date,
+                        include_balances,
                     )
                     .await
                 }
@@ -152,6 +154,7 @@ impl TTA {
                         wallets_for_account,
                         start_date,
                         end_date,
+                        include_balances,
                     )
                     .await
                 }
@@ -179,6 +182,7 @@ impl TTA {
                         wallets_for_account,
                         start_date,
                         end_date,
+                        include_balances,
                     )
                     .await
                 }
@@ -238,6 +242,7 @@ impl TTA {
         accounts: HashSet<String>,
         start_date: u128,
         end_date: u128,
+        include_balances: bool,
     ) -> Result<Vec<ReportRow>> {
         let mut report = vec![];
         let (tx, mut rx) = channel(100);
@@ -303,7 +308,7 @@ impl TTA {
             };
 
             let mut onchain_balance = None;
-            if ft_amount_in.is_some() || ft_amount_out.is_some() {
+            if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
                 let ft_service = self.ft_service.clone();
                 let mut ft_service = ft_service.lock().await;
                 onchain_balance = Some(
