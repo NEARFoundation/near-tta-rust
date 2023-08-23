@@ -17,8 +17,10 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     num::{NonZeroU32, NonZeroUsize},
+    sync::Arc,
 };
-use tracing::debug;
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
 
 use std::hash::{Hash, Hasher};
 
@@ -60,33 +62,45 @@ pub struct FtMetadata {
     pub decimals: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FtService {
-    pub ft_metadata_cache: HashMap<String, FtMetadata>,
-    pub ft_balances_cache: LruCache<CompositeKey, f64>,
+    pub ft_metadata_cache: Arc<RwLock<HashMap<String, FtMetadata>>>,
+    pub ft_balances_cache: Arc<RwLock<LruCache<CompositeKey, f64>>>,
     pub near_client: JsonRpcClient,
-    pub archival_rate_limiter: RateLimiter<
-        governor::state::NotKeyed,
-        governor::state::InMemoryState,
-        governor::clock::QuantaClock,
-        governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
+    pub archival_rate_limiter: Arc<
+        RwLock<
+            RateLimiter<
+                governor::state::NotKeyed,
+                governor::state::InMemoryState,
+                governor::clock::QuantaClock,
+                governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
+            >,
+        >,
     >,
 }
 
 impl FtService {
     pub fn new(near_client: JsonRpcClient) -> Self {
         FtService {
-            ft_metadata_cache: HashMap::new(),
-            ft_balances_cache: LruCache::new(NonZeroUsize::new(1_000_000).unwrap()),
+            ft_metadata_cache: Arc::new(RwLock::new(HashMap::new())),
+            ft_balances_cache: Arc::new(RwLock::new(LruCache::new(
+                NonZeroUsize::new(1_000_000).unwrap(),
+            ))),
             near_client,
-            archival_rate_limiter: RateLimiter::direct(Quota::per_second(
-                NonZeroU32::new(20u32).unwrap(),
-            )),
+            archival_rate_limiter: Arc::new(RwLock::new(RateLimiter::direct(Quota::per_second(
+                NonZeroU32::new(10u32).unwrap(),
+            )))),
         }
     }
 
-    pub async fn assert_ft_metadata(&mut self, ft_token_id: &str) -> Result<FtMetadata> {
-        if !self.ft_metadata_cache.contains_key(ft_token_id) {
+    pub async fn assert_ft_metadata(&self, ft_token_id: &str) -> Result<FtMetadata> {
+        if !self
+            .ft_metadata_cache
+            .clone()
+            .read()
+            .await
+            .contains_key(ft_token_id)
+        {
             let args = json!({}).to_string().into_bytes();
 
             let result = match view_function_call(
@@ -111,11 +125,12 @@ impl FtService {
             };
 
             let v = serde_json::from_slice(&result)?;
-
-            self.ft_metadata_cache.insert(ft_token_id.to_string(), v);
+            let e = self.ft_metadata_cache.clone();
+            let mut w = e.write().await;
+            w.insert(ft_token_id.to_string(), v);
         }
 
-        match self.ft_metadata_cache.get(ft_token_id) {
+        match self.ft_metadata_cache.read().await.get(ft_token_id) {
             Some(v) => Ok(v.clone()),
             None => bail!("ft_metadata not found"),
         }
@@ -123,21 +138,28 @@ impl FtService {
 
     #[tracing::instrument(skip(self))]
     pub async fn assert_ft_balance(
-        &mut self,
+        &self,
         token_id: &String,
         account_id: &String,
         block_id: u64,
     ) -> Result<f64> {
-        debug!("Getting ft_balance");
-
-        if self.ft_balances_cache.contains(&CompositeKey {
-            block_id,
-            account_id: account_id.clone(),
-            token_id: token_id.clone(),
-        }) {
+        // debug!("Getting ft_balance");
+        warn!("Getting ft_balance");
+        if self
+            .ft_balances_cache
+            .clone()
+            .read()
+            .await
+            .contains(&CompositeKey {
+                block_id,
+                account_id: account_id.clone(),
+                token_id: token_id.clone(),
+            })
+        {
             debug!("Found ft_balance in cache");
-            return Ok(*self
-                .ft_balances_cache
+            let w = self.ft_balances_cache.clone();
+            let mut w = w.write().await;
+            return Ok(*w
                 .get(&CompositeKey {
                     block_id,
                     account_id: account_id.clone(),
@@ -145,10 +167,13 @@ impl FtService {
                 })
                 .unwrap());
         }
-
-        self.archival_rate_limiter.until_ready().await;
-
-        debug!("Rate limiter gave green light");
+        warn!("Getting write lock");
+        let w = self.archival_rate_limiter.clone();
+        let w = w.write().await;
+        warn!("Waiting for rate limiter");
+        w.until_ready().await;
+        warn!("Rate limiter gave green light");
+        drop(w);
 
         let metadata = self.assert_ft_metadata(token_id).await.unwrap();
 
@@ -181,7 +206,9 @@ impl FtService {
 
         debug!("Got ft_balance amount: {}", amount);
 
-        self.ft_balances_cache.put(
+        let w = self.ft_balances_cache.clone();
+        let mut w = w.write().await;
+        w.put(
             CompositeKey {
                 block_id,
                 account_id: account_id.clone(),

@@ -15,7 +15,7 @@ use tokio::sync::{
     Mutex, Semaphore,
 };
 
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use super::{
     ft_metadata::{FtMetadata, FtService},
@@ -68,16 +68,12 @@ impl TransactionType {
 #[derive(Debug, Clone)]
 pub struct TTA {
     sql_client: SqlClient,
-    ft_service: Arc<Mutex<FtService>>,
+    ft_service: FtService,
     semaphore: Arc<Semaphore>,
 }
 
 impl TTA {
-    pub fn new(
-        sql_client: SqlClient,
-        ft_service: Arc<Mutex<FtService>>,
-        semaphore: Arc<Semaphore>,
-    ) -> Self {
+    pub fn new(sql_client: SqlClient, ft_service: FtService, semaphore: Arc<Semaphore>) -> Self {
         Self {
             sql_client,
             ft_service,
@@ -313,8 +309,8 @@ impl TTA {
                 let mut onchain_balance = None;
                 let mut onchain_balance_token = None;
                 if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
+                    warn!("Getting onchain balance for {}", f2);
                     let ft_service = t2.ft_service.clone();
-                    let mut ft_service = ft_service.lock().await;
                     onchain_balance = Some(
                         ft_service
                             .assert_ft_balance(
@@ -509,9 +505,8 @@ impl TTA {
     }
 
     async fn get_metadata(&self, token_id: &String) -> Result<FtMetadata> {
-        let ft_service = self.ft_service.clone();
-        let mut w = ft_service.lock().await;
-        let metadata = match w.assert_ft_metadata(token_id.as_str()).await {
+        let mut ft_service = self.ft_service.clone();
+        let metadata = match ft_service.assert_ft_metadata(token_id.as_str()).await {
             Ok(metadata) => metadata,
             Err(e) => bail!(
                 "Failed to get ft_metadata for token_id: {:?}, err: {:?}",

@@ -54,10 +54,10 @@ async fn main() -> Result<()> {
 
     let sql_client = SqlClient::new(pool);
     let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
-    let ft_metadata_cache = Arc::new(Mutex::new(FtService::new(near_client)));
+    let ft_service = FtService::new(near_client);
     let semaphore = Arc::new(Semaphore::new(30));
 
-    let tta_service = TTA::new(sql_client, ft_metadata_cache.clone(), semaphore);
+    let tta_service = TTA::new(sql_client, ft_service, semaphore);
 
     let trace = TraceLayer::new_for_http();
     let cors = CorsLayer::new().allow_methods(Any).allow_origin(Any);
