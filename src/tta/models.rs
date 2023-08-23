@@ -21,6 +21,7 @@ pub struct ReportRow {
     pub to_account: String,
     pub amount_staked: f64,
     pub onchain_balance: Option<f64>,
+    pub onchain_balance_token: Option<String>,
 }
 
 // Define the extension trait
@@ -55,6 +56,7 @@ impl ReportRow {
             "to_account".to_string(),
             "amount_staked".to_string(),
             "onchain_balance".to_string(),
+            "onchain_balance_token".to_string(),
         ]
     }
 
@@ -80,6 +82,7 @@ impl ReportRow {
             self.amount_staked.to_5dp_string(),
             self.onchain_balance
                 .map_or(String::new(), |v| v.to_5dp_string()),
+            self.ft_currency_in.clone().unwrap_or_default(),
         ]
     }
 }

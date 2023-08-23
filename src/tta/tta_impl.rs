@@ -308,6 +308,7 @@ impl TTA {
             };
 
             let mut onchain_balance = None;
+            let mut onchain_balance_token = None;
             if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
                 let ft_service = self.ft_service.clone();
                 let mut ft_service = ft_service.lock().await;
@@ -321,6 +322,14 @@ impl TTA {
                                 .expect("Block height too large to fit in u128"),
                         )
                         .await?,
+                );
+                onchain_balance_token = Some(
+                    self.ft_service
+                        .lock()
+                        .await
+                        .assert_ft_metadata(&txn.r_receiver_account_id)
+                        .await?
+                        .symbol,
                 );
             }
 
@@ -342,6 +351,7 @@ impl TTA {
                 to_account,
                 amount_staked: 0.0,
                 onchain_balance,
+                onchain_balance_token,
             };
 
             report.push(row)
