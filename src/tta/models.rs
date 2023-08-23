@@ -2,7 +2,7 @@ use near_primitives::types::AccountId;
 use near_sdk::json_types::U128;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ReportRow {
     pub date: String,
     pub account_id: String,
@@ -82,7 +82,7 @@ impl ReportRow {
             self.amount_staked.to_5dp_string(),
             self.onchain_balance
                 .map_or(String::new(), |v| v.to_5dp_string()),
-            self.ft_currency_in.clone().unwrap_or_default(),
+            self.onchain_balance_token.clone().unwrap_or_default(),
         ]
     }
 }

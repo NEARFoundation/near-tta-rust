@@ -18,7 +18,7 @@ use std::{
     collections::HashMap,
     num::{NonZeroU32, NonZeroUsize},
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 use std::hash::{Hash, Hasher};
 
@@ -80,7 +80,7 @@ impl FtService {
             ft_balances_cache: LruCache::new(NonZeroUsize::new(1_000_000).unwrap()),
             near_client,
             archival_rate_limiter: RateLimiter::direct(Quota::per_second(
-                NonZeroU32::new(9u32).unwrap(),
+                NonZeroU32::new(20u32).unwrap(),
             )),
         }
     }
@@ -128,11 +128,14 @@ impl FtService {
         account_id: &String,
         block_id: u64,
     ) -> Result<f64> {
+        debug!("Getting ft_balance");
+
         if self.ft_balances_cache.contains(&CompositeKey {
             block_id,
             account_id: account_id.clone(),
             token_id: token_id.clone(),
         }) {
+            debug!("Found ft_balance in cache");
             return Ok(*self
                 .ft_balances_cache
                 .get(&CompositeKey {
@@ -144,6 +147,8 @@ impl FtService {
         }
 
         self.archival_rate_limiter.until_ready().await;
+
+        debug!("Rate limiter gave green light");
 
         let metadata = self.assert_ft_metadata(token_id).await.unwrap();
 
@@ -173,6 +178,8 @@ impl FtService {
         let amount: String = serde_json::from_slice(&result)?;
         let amount = amount.parse::<u128>()?;
         let amount = safe_divide_u128(amount, metadata.decimals as u32);
+
+        debug!("Got ft_balance amount: {}", amount);
 
         self.ft_balances_cache.put(
             CompositeKey {
