@@ -2,6 +2,7 @@ use std::{collections::HashSet, sync::Arc, vec};
 
 use anyhow::{bail, Context, Result};
 
+use futures_util::future::join_all;
 use near_sdk::ONE_NEAR;
 
 use crate::tta::utils::get_associated_lockup;
@@ -19,7 +20,7 @@ use tracing::{error, info, instrument};
 use super::{
     ft_metadata::{FtMetadata, FtService},
     models::{
-        FtAmounts, FtTransfer, FtTransferCall, MethodName, RainbowBridgeMint, ReportRow, Swap,
+        FtAmounts, FtTransfer, FtTransferCall, MethodName, RainbowBridgeMint, ReportRow,
         WithdrawFromBridge,
     },
     sql::{
@@ -244,7 +245,7 @@ impl TTA {
         end_date: u128,
         include_balances: bool,
     ) -> Result<Vec<ReportRow>> {
-        let mut report = vec![];
+        let mut report: Vec<ReportRow> = vec![];
         let (tx, mut rx) = channel(100);
 
         let t = self.clone();
@@ -258,104 +259,119 @@ impl TTA {
             }
         });
 
+        let mut rows_handle = vec![];
         while let Some(txn) = rx.recv().await {
-            if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
-                continue;
-            }
-
-            let txn_args = decode_args(&txn)?;
-
-            // Skipping gas refunds
-            if get_near_transferred(&txn_args) < 0.5
-                && txn.ara_receipt_predecessor_account_id == "system"
-            {
-                continue;
-            }
-
-            let ft_amounts = match self
-                .get_ft_amounts(
-                    txn_type != TransactionType::Outgoing,
-                    txn.clone(),
-                    txn_args.clone(),
-                )
-                .await
-            {
-                Ok(ft_amounts) => ft_amounts,
-                Err(e) => {
-                    error!(?e, "Error getting ft amounts");
-                    continue;
+            let t2: TTA = self.clone();
+            let f2 = for_account.clone();
+            let a2 = accounts.clone();
+            let row = tokio::spawn(async move {
+                if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
+                    return Ok(None);
                 }
-            };
 
-            let (ft_amount_out, ft_currency_out, ft_amount_in, ft_currency_in, to_account) =
-                ft_amounts
-                    .as_ref()
-                    .map(|ft_amounts| {
-                        (
-                            ft_amounts.ft_amount_out,
-                            ft_amounts.ft_currency_out.clone(),
-                            ft_amounts.ft_amount_in,
-                            ft_amounts.ft_currency_in.clone(),
-                            ft_amounts.to_account.clone(),
-                        )
-                    })
-                    .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
+                let txn_args = decode_args(&txn)?;
 
-            let multiplier = if accounts.contains(txn.r_predecessor_account_id.as_str()) {
-                -1.0
-            } else {
-                1.0
-            };
+                // Skipping gas refunds
+                if get_near_transferred(&txn_args) < 0.5
+                    && txn.ara_receipt_predecessor_account_id == "system"
+                {
+                    return Ok(None);
+                }
 
-            let mut onchain_balance = None;
-            let mut onchain_balance_token = None;
-            if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
-                let ft_service = self.ft_service.clone();
-                let mut ft_service = ft_service.lock().await;
-                onchain_balance = Some(
-                    ft_service
-                        .assert_ft_balance(
-                            &txn.r_receiver_account_id,
-                            &for_account,
-                            txn.b_block_height
-                                .to_u64()
-                                .expect("Block height too large to fit in u128"),
-                        )
-                        .await?,
-                );
-                onchain_balance_token = Some(
-                    self.ft_service
-                        .lock()
-                        .await
-                        .assert_ft_metadata(&txn.r_receiver_account_id)
-                        .await?
-                        .symbol,
-                );
-            }
+                let ft_amounts = match t2
+                    .get_ft_amounts(
+                        txn_type != TransactionType::Outgoing,
+                        txn.clone(),
+                        txn_args.clone(),
+                    )
+                    .await
+                {
+                    Ok(ft_amounts) => ft_amounts,
+                    Err(e) => bail!("Error getting ft amounts: {:?}", e),
+                };
 
-            let row = ReportRow {
-                account_id: for_account.clone(),
-                date: get_transaction_date(&txn),
-                method_name: get_method_name(&txn, &txn_args),
-                block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
-                from_account: txn.ara_receipt_predecessor_account_id.clone(),
-                block_height: txn.b_block_height.to_u128().unwrap(),
-                args: decode_transaction_args(&txn_args),
-                transaction_hash: txn.t_transaction_hash.clone(),
-                amount_transferred: get_near_transferred(&txn_args) * multiplier,
-                currency_transferred: "NEAR".to_string(),
-                ft_amount_out,
-                ft_currency_out,
-                ft_amount_in,
-                ft_currency_in,
-                to_account,
-                amount_staked: 0.0,
-                onchain_balance,
-                onchain_balance_token,
-            };
+                let (ft_amount_out, ft_currency_out, ft_amount_in, ft_currency_in, to_account) =
+                    ft_amounts
+                        .as_ref()
+                        .map(|ft_amounts| {
+                            (
+                                ft_amounts.ft_amount_out,
+                                ft_amounts.ft_currency_out.clone(),
+                                ft_amounts.ft_amount_in,
+                                ft_amounts.ft_currency_in.clone(),
+                                ft_amounts.to_account.clone(),
+                            )
+                        })
+                        .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
 
-            report.push(row)
+                let multiplier = if a2.contains(txn.r_predecessor_account_id.as_str()) {
+                    -1.0
+                } else {
+                    1.0
+                };
+
+                let mut onchain_balance = None;
+                let mut onchain_balance_token = None;
+                if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
+                    let ft_service = t2.ft_service.clone();
+                    let mut ft_service = ft_service.lock().await;
+                    onchain_balance = Some(
+                        ft_service
+                            .assert_ft_balance(
+                                &txn.r_receiver_account_id,
+                                &f2,
+                                txn.b_block_height
+                                    .to_u64()
+                                    .expect("Block height too large to fit in u128"),
+                            )
+                            .await?,
+                    );
+                    onchain_balance_token = Some(
+                        ft_service
+                            .assert_ft_metadata(&txn.r_receiver_account_id)
+                            .await?
+                            .symbol,
+                    );
+                }
+
+                Ok(Some(ReportRow {
+                    account_id: f2.clone(),
+                    date: get_transaction_date(&txn),
+                    method_name: get_method_name(&txn, &txn_args),
+                    block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),
+                    from_account: txn.ara_receipt_predecessor_account_id.clone(),
+                    block_height: txn.b_block_height.to_u128().unwrap(),
+                    args: decode_transaction_args(&txn_args),
+                    transaction_hash: txn.t_transaction_hash.clone(),
+                    amount_transferred: get_near_transferred(&txn_args) * multiplier,
+                    currency_transferred: "NEAR".to_string(),
+                    ft_amount_out,
+                    ft_currency_out,
+                    ft_amount_in,
+                    ft_currency_in,
+                    to_account,
+                    amount_staked: 0.0,
+                    onchain_balance,
+                    onchain_balance_token,
+                }))
+            });
+            rows_handle.push(row);
         }
+
+        join_all(rows_handle)
+            .await
+            .iter()
+            .for_each(|row| match row {
+                Ok(r) => match r {
+                    Ok(row) => {
+                        if let Some(row) = row {
+                            report.push(row.clone())
+                        }
+                    }
+                    Err(err) => error!(?err, "Error getting row"),
+                },
+                Err(err) => error!(?err, "Error joining rows"),
+            });
 
         Ok(report)
     }
