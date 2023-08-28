@@ -88,7 +88,7 @@ impl FtService {
             ))),
             near_client,
             archival_rate_limiter: Arc::new(RwLock::new(RateLimiter::direct(Quota::per_second(
-                NonZeroU32::new(10u32).unwrap(),
+                NonZeroU32::new(5u32).unwrap(),
             )))),
         }
     }
@@ -144,7 +144,7 @@ impl FtService {
         block_id: u64,
     ) -> Result<f64> {
         // debug!("Getting ft_balance");
-        warn!("Getting ft_balance");
+        debug!("Getting ft_balance");
         if self
             .ft_balances_cache
             .clone()
@@ -156,7 +156,7 @@ impl FtService {
                 token_id: token_id.clone(),
             })
         {
-            debug!("Found ft_balance in cache");
+            warn!("Found ft_balance in cache");
             let w = self.ft_balances_cache.clone();
             let mut w = w.write().await;
             return Ok(*w
@@ -167,13 +167,12 @@ impl FtService {
                 })
                 .unwrap());
         }
-        warn!("Getting write lock");
+        debug!("Getting write lock");
         let w = self.archival_rate_limiter.clone();
         let w = w.write().await;
-        warn!("Waiting for rate limiter");
+        debug!("Waiting for rate limiter");
         w.until_ready().await;
-        warn!("Rate limiter gave green light");
-        drop(w);
+        debug!("Rate limiter gave green light");
 
         let metadata = self.assert_ft_metadata(token_id).await.unwrap();
 
@@ -199,6 +198,8 @@ impl FtService {
                 );
             }
         };
+
+        drop(w);
 
         let amount: String = serde_json::from_slice(&result)?;
         let amount = amount.parse::<u128>()?;

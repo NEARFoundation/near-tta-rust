@@ -15,7 +15,7 @@ use tokio::sync::{
     Mutex, Semaphore,
 };
 
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use super::{
     ft_metadata::{FtMetadata, FtService},
@@ -309,7 +309,7 @@ impl TTA {
                 let mut onchain_balance = None;
                 let mut onchain_balance_token = None;
                 if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
-                    warn!("Getting onchain balance for {}", f2);
+                    debug!("Getting onchain balance for {}", f2);
                     let ft_service = t2.ft_service.clone();
                     onchain_balance = Some(
                         ft_service
