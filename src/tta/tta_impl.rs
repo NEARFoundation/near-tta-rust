@@ -15,7 +15,7 @@ use tokio::sync::{
     Mutex, Semaphore,
 };
 
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 use super::{
     ft_metadata::{FtMetadata, FtService},
@@ -300,7 +300,7 @@ impl TTA {
                         })
                         .unwrap_or((None, None, None, None, txn.r_receiver_account_id.clone()));
 
-                let multiplier = if a2.contains(txn.r_predecessor_account_id.as_str()) {
+                let multiplier = if txn_type == TransactionType::Outgoing {
                     -1.0
                 } else {
                     1.0
@@ -505,7 +505,7 @@ impl TTA {
     }
 
     async fn get_metadata(&self, token_id: &String) -> Result<FtMetadata> {
-        let mut ft_service = self.ft_service.clone();
+        let ft_service = self.ft_service.clone();
         let metadata = match ft_service.assert_ft_metadata(token_id.as_str()).await {
             Ok(metadata) => metadata,
             Err(e) => bail!(
