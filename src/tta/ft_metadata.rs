@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use governor::{Quota, RateLimiter};
+use governor::{clock, state, Quota, RateLimiter};
 use lru::LruCache;
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryRequest, RpcQueryResponse};
@@ -62,21 +62,19 @@ pub struct FtMetadata {
     pub decimals: u8,
 }
 
+type RateLim = RateLimiter<
+    state::NotKeyed,
+    state::InMemoryState,
+    clock::QuantaClock,
+    governor::middleware::NoOpMiddleware<clock::QuantaInstant>,
+>;
+
 #[derive(Debug, Clone)]
 pub struct FtService {
     pub ft_metadata_cache: Arc<RwLock<HashMap<String, FtMetadata>>>,
     pub ft_balances_cache: Arc<RwLock<LruCache<CompositeKey, f64>>>,
     pub near_client: JsonRpcClient,
-    pub archival_rate_limiter: Arc<
-        RwLock<
-            RateLimiter<
-                governor::state::NotKeyed,
-                governor::state::InMemoryState,
-                governor::clock::QuantaClock,
-                governor::middleware::NoOpMiddleware<governor::clock::QuantaInstant>,
-            >,
-        >,
-    >,
+    pub archival_rate_limiter: Arc<RwLock<RateLim>>,
 }
 
 impl FtService {
@@ -143,8 +141,16 @@ impl FtService {
         account_id: &String,
         block_id: u64,
     ) -> Result<f64> {
-        // debug!("Getting ft_balance");
         debug!("Getting ft_balance");
+
+        let w = self.archival_rate_limiter.clone();
+        let lock = w.write().await;
+        debug!("Waiting for rate limiter");
+
+        lock.until_ready().await;
+
+        debug!("Rate limiter gave green light");
+
         if self
             .ft_balances_cache
             .clone()
@@ -167,12 +173,6 @@ impl FtService {
                 })
                 .unwrap());
         }
-        debug!("Getting write lock");
-        let w = self.archival_rate_limiter.clone();
-        let w = w.write().await;
-        debug!("Waiting for rate limiter");
-        w.until_ready().await;
-        debug!("Rate limiter gave green light");
 
         let metadata = self.assert_ft_metadata(token_id).await.unwrap();
 
@@ -199,7 +199,7 @@ impl FtService {
             }
         };
 
-        drop(w);
+        drop(lock);
 
         let amount: String = serde_json::from_slice(&result)?;
         let amount = amount.parse::<u128>()?;

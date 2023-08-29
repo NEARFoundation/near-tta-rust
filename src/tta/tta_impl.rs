@@ -12,7 +12,7 @@ use chrono::{NaiveDateTime, Utc};
 use num_traits::cast::ToPrimitive;
 use tokio::sync::{
     mpsc::{channel, Sender},
-    Mutex, Semaphore,
+    Semaphore,
 };
 
 use tracing::{debug, error, info, instrument};
@@ -259,7 +259,6 @@ impl TTA {
         while let Some(txn) = rx.recv().await {
             let t2: TTA = self.clone();
             let f2 = for_account.clone();
-            let a2 = accounts.clone();
             let row = tokio::spawn(async move {
                 if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
                     return Ok(None);
@@ -604,5 +603,61 @@ fn assert_moves_token(row: ReportRow) -> Option<ReportRow> {
         None
     } else {
         Some(row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::DateTime;
+    use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    async fn get_tta_service() {
+        let pool = PgPoolOptions::new()
+            .max_connections(30)
+            .connect(env!("DATABASE_URL"))
+            .await
+            .unwrap();
+
+        let sql_client = SqlClient::new(pool);
+        let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
+        let ft_service = FtService::new(near_client);
+        let semaphore = Arc::new(Semaphore::new(30));
+
+        let tta_service = TTA::new(sql_client, ft_service, semaphore);
+    }
+
+    #[tokio::test]
+    async fn tta() {
+        let pool = PgPoolOptions::new()
+            .max_connections(30)
+            .connect(env!("DATABASE_URL"))
+            .await
+            .unwrap();
+
+        let sql_client = SqlClient::new(pool);
+        let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
+        let ft_service = FtService::new(near_client);
+        let semaphore = Arc::new(Semaphore::new(30));
+
+        let tta_service = TTA::new(sql_client, ft_service, semaphore);
+
+        let start_date = DateTime::parse_from_rfc3339("2022-01-01T00:00:00Z")
+            .unwrap()
+            .timestamp_nanos() as u128;
+        let end_date = DateTime::parse_from_rfc3339("2022-02-01T00:00:00Z")
+            .unwrap()
+            .timestamp_nanos() as u128;
+        let accounts: HashSet<String> = "nf-payments.near,nf-payments2.near"
+            .split(',')
+            .map(String::from)
+            .collect();
+        let include_balances = false;
+
+        let res = tta_service.get_txns_report(start_date, end_date, accounts, include_balances);
+
+        assert!(res.await.is_ok());
     }
 }

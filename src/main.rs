@@ -20,7 +20,7 @@ use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
 use std::{collections::HashSet, env, sync::Arc};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use tracing::*;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use tta::tta_impl::TTA;
@@ -47,6 +47,23 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber)?;
 
+    let app = router().await?;
+
+    let ip = env!("IP");
+    let port = env!("PORT");
+    let address = format!("{ip}:{port}");
+    info!("Binding server to {address}");
+
+    axum::Server::bind(&address.parse().unwrap())
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
+
+    info!("Closing server on {address}");
+    Ok(())
+}
+
+async fn router() -> Result<Router> {
     let pool = PgPoolOptions::new()
         .max_connections(30)
         .connect(env!("DATABASE_URL"))
@@ -63,23 +80,10 @@ async fn main() -> Result<()> {
     let cors = CorsLayer::new().allow_methods(Any).allow_origin(Any);
     let middleware = ServiceBuilder::new().layer(trace).layer(cors);
 
-    let app = Router::new()
+    Ok(Router::new()
         .route("/tta", get(get_txns_report))
         .with_state(tta_service)
-        .layer(middleware);
-
-    let ip = env!("IP");
-    let port = env!("PORT");
-    let address = format!("{ip}:{port}");
-    info!("Binding server to {address}");
-
-    axum::Server::bind(&address.parse().unwrap())
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
-
-    info!("Closing server on {address}");
-    Ok(())
+        .layer(middleware))
 }
 
 // HTTP layer
@@ -145,4 +149,61 @@ async fn get_txns_report(
         .unwrap();
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum_test_helper::TestClient;
+    use futures_util::future::join_all;
+
+    #[tokio::test]
+    async fn test_tta_router() {
+        let subscriber = FmtSubscriber::builder().finish();
+
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+
+        let router = router().await.unwrap();
+        let client = TestClient::new(router);
+        let res = client.get("/tta?start_date=2023-01-01T00:00:00Z&end_date=2023-02-01T00:00:00Z&accounts=nf-payments.near&include_balances=false").send().await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn loadtest_tta() {
+        let subscriber = FmtSubscriber::builder().finish();
+
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+        let router = router().await.unwrap();
+
+        let request_url = "/tta?start_date=2023-01-01T00:00:00Z&end_date=2023-02-01T00:00:00Z&accounts=nf-payments.near&include_balances=true";
+
+        let futures = (0..20)
+            .map(|_| {
+                let router = router.clone(); // Clone the router for each request
+                tokio::spawn(async move {
+                    let client = TestClient::new(router); // Create a new client for each request
+                    let res = client.get(request_url).send().await;
+                    assert_eq!(res.status(), StatusCode::OK);
+                    res
+                })
+            })
+            .collect::<Vec<_>>();
+
+        // wait for all requests to complete
+        let results: Vec<_> = join_all(futures).await.into_iter().collect();
+
+        for result in results {
+            match result {
+                Ok(res) => {
+                    assert_eq!(res.status(), StatusCode::OK);
+                }
+                Err(e) => {
+                    eprintln!("Request error: {:?}", e);
+                    panic!("Request failed");
+                }
+            }
+        }
+    }
 }
