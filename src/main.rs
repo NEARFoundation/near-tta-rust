@@ -7,6 +7,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing_loki::url::Url;
 use tta::models::ReportRow;
 
 use axum::{
@@ -19,10 +20,10 @@ use dotenvy::dotenv;
 use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use std::{collections::HashSet, env, sync::Arc};
-use tokio::sync::Semaphore;
+use std::{collections::HashSet, env, fmt, sync::Arc};
+use tokio::{spawn, sync::Semaphore};
 use tracing::*;
-use tracing_subscriber::{EnvFilter, FmtSubscriber};
+use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, FmtSubscriber};
 use tta::tta_impl::TTA;
 
 use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient};
@@ -43,9 +44,7 @@ async fn main() -> Result<()> {
         None => EnvFilter::new("info"),
     };
 
-    let subscriber = FmtSubscriber::builder().with_env_filter(filter).finish();
-
-    tracing::subscriber::set_global_default(subscriber)?;
+    init_tracing()?;
 
     let app = router().await?;
 
@@ -60,6 +59,41 @@ async fn main() -> Result<()> {
         .unwrap();
 
     info!("Closing server on {address}");
+    Ok(())
+}
+
+fn init_tracing() -> anyhow::Result<()> {
+    // Check the environment variable
+    let env = env::var("ENV").unwrap_or_else(|_| "production".to_string());
+
+    let filter = match option_env!("LOG_LEVEL") {
+        Some(level) => EnvFilter::new(level),
+        None => EnvFilter::new("info"),
+    };
+
+    if env == "local" {
+        // If we're in a local environment, just set a simple subscriber
+        tracing::subscriber::set_global_default(
+            FmtSubscriber::builder().with_env_filter(filter).finish(),
+        )?;
+    } else {
+        // If we're not in a local environment, set up Loki logging
+        let (layer, task) = tracing_loki::builder()
+            .label("job", "tta")?
+            .build_url(Url::parse("http://loki-33z9:3100")?)?;
+
+        tracing::subscriber::set_global_default(
+            FmtSubscriber::builder()
+                .with_env_filter(filter)
+                .finish()
+                .with(layer),
+        )?;
+
+        spawn(task);
+    }
+
+    debug!("Tracing initialized.");
+
     Ok(())
 }
 
