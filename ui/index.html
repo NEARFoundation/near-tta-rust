@@ -36,17 +36,23 @@
     <script>
         const TTA_URL = "https://tta-api.onrender.com";
 
-        function handleDownloadClick() {
+        const handleDownloadClick = async () => {
             const downloadButton = document.getElementById("downloadButton");
             downloadButton.disabled = true;
             downloadButton.innerText = "Loading, time to grab a coffee...";
 
-            const startDate = document.getElementById("startDate").value;
-            const endDate = document.getElementById("endDate").value;
-            const accountIds = document.getElementById("accountIds").value.trim().split(/[\n,]/).join(",");
-            const includeBalances = document.getElementById("includeBalances").checked;
 
-            const url = `${TTA_URL}/tta?start_date=${startDate}&end_date=${endDate}&accounts=${accountIds}&include_balances=${includeBalances}`;
+            // Use toISOString directly without substring for full "YYYY-MM-DDTHH:MM:SS.ZZZZ" format
+            const start = new Date(startDate + "T00:00:00Z").toISOString();
+            const end = new Date(endDate + "T00:00:00Z").toISOString();
+
+            // Split the accountIds by newline character
+            const accountIdsArray = accountIds.replaceAll(" ", "").split("\n");
+            const commaSeparatedAccountIds = accountIdsArray.join(",");
+
+            const url =
+                `${TTA_URL}/tta?start_date=${start}&end_date=${end}&accounts=${commaSeparatedAccountIds}` +
+                `&include_balances=${includeBalances.toString()}`;
 
             fetch(url, { method: "GET" }).then(response => {
                 if (response.ok) {

@@ -39,11 +39,6 @@ async fn main() -> Result<()> {
         Err(e) => warn!("Failed to load .env file: {}", e),
     }
 
-    let filter = match option_env!("LOG_LEVEL") {
-        Some(level) => EnvFilter::new(level),
-        None => EnvFilter::new("info"),
-    };
-
     init_tracing()?;
 
     let app = router().await?;
