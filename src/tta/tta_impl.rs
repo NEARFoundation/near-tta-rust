@@ -1,11 +1,15 @@
-use std::{collections::HashSet, sync::Arc, vec};
+use std::{
+    collections::HashSet,
+    sync::{Arc, RwLock},
+    vec,
+};
 
 use anyhow::{bail, Context, Result};
 
 use futures_util::future::join_all;
 use near_sdk::ONE_NEAR;
 
-use crate::tta::utils::get_associated_lockup;
+use crate::{tta::utils::get_associated_lockup, TxnsReportWithMetadata};
 use base64::{engine::general_purpose, Engine as _};
 use chrono::{NaiveDateTime, Utc};
 
@@ -88,6 +92,7 @@ impl TTA {
         end_date: u128,
         accounts: HashSet<String>,
         include_balances: bool,
+        metadata: Arc<RwLock<TxnsReportWithMetadata>>,
     ) -> Result<Vec<ReportRow>> {
         info!(?start_date, ?end_date, ?accounts, "Got request");
 
@@ -116,6 +121,8 @@ impl TTA {
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let for_account = acc.clone();
+                let metadata = metadata.clone();
+
                 async move {
                     let _s = s;
                     t.handle_txns(
@@ -125,6 +132,7 @@ impl TTA {
                         start_date,
                         end_date,
                         include_balances,
+                        metadata,
                     )
                     .await
                 }
@@ -143,6 +151,8 @@ impl TTA {
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let for_account = acc.clone();
+                let metadata = metadata.clone();
+
                 async move {
                     let _s = s;
                     t.handle_txns(
@@ -152,6 +162,7 @@ impl TTA {
                         start_date,
                         end_date,
                         include_balances,
+                        metadata,
                     )
                     .await
                 }
@@ -170,6 +181,8 @@ impl TTA {
                 let wallets_for_account = wallets_for_account.clone();
                 let t = t.clone();
                 let a = acc.clone();
+                let metadata = metadata.clone();
+
                 async move {
                     let _s = s;
 
@@ -180,6 +193,7 @@ impl TTA {
                         start_date,
                         end_date,
                         include_balances,
+                        metadata,
                     )
                     .await
                 }
@@ -196,7 +210,7 @@ impl TTA {
                 Ok(res) => match res {
                     Ok(partial_report) => {
                         let mut p = vec![];
-                        // Aply filtering
+                        // Apply filtering
                         for ele in partial_report {
                             if let Some(ele) = assert_moves_token(ele) {
                                 p.push(ele)
@@ -240,6 +254,7 @@ impl TTA {
         start_date: u128,
         end_date: u128,
         include_balances: bool,
+        metadata: Arc<RwLock<TxnsReportWithMetadata>>,
     ) -> Result<Vec<ReportRow>> {
         let mut report: Vec<ReportRow> = vec![];
         let (tx, mut rx) = channel(100);
@@ -259,6 +274,7 @@ impl TTA {
         while let Some(txn) = rx.recv().await {
             let t2: TTA = self.clone();
             let f2 = for_account.clone();
+            let metadata = metadata.clone();
             let row = tokio::spawn(async move {
                 if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
                     return Ok(None);
@@ -329,6 +345,13 @@ impl TTA {
                     );
                 }
 
+                let data = metadata
+                    .read()
+                    .unwrap()
+                    .metadata
+                    .get(&f2)
+                    .and_then(|m| m.get(&txn.t_transaction_hash).cloned());
+
                 Ok(Some(ReportRow {
                     account_id: f2.clone(),
                     date: get_transaction_date(&txn),
@@ -348,6 +371,7 @@ impl TTA {
                     amount_staked: 0.0,
                     onchain_balance,
                     onchain_balance_token,
+                    metadata: data,
                 }))
             });
             rows_handle.push(row);
@@ -608,41 +632,32 @@ fn assert_moves_token(row: ReportRow) -> Option<ReportRow> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use chrono::DateTime;
     use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
 
-    async fn get_tta_service() {
+    async fn setup() -> Result<(SqlClient, FtService, TTA)> {
         let pool = PgPoolOptions::new()
             .max_connections(30)
             .connect(env!("DATABASE_URL"))
-            .await
-            .unwrap();
+            .await?;
 
         let sql_client = SqlClient::new(pool);
         let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
         let ft_service = FtService::new(near_client);
         let semaphore = Arc::new(Semaphore::new(30));
+        let tta_service = TTA::new(sql_client.clone(), ft_service.clone(), semaphore);
 
-        let tta_service = TTA::new(sql_client, ft_service, semaphore);
+        Ok((sql_client, ft_service, tta_service))
     }
 
     #[tokio::test]
-    async fn tta() {
-        let pool = PgPoolOptions::new()
-            .max_connections(30)
-            .connect(env!("DATABASE_URL"))
-            .await
-            .unwrap();
-
-        let sql_client = SqlClient::new(pool);
-        let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
-        let ft_service = FtService::new(near_client);
-        let semaphore = Arc::new(Semaphore::new(30));
-
-        let tta_service = TTA::new(sql_client, ft_service, semaphore);
+    async fn tta() -> Result<()> {
+        let (_, _, tta_service) = setup().await?;
 
         let start_date = DateTime::parse_from_rfc3339("2022-01-01T00:00:00Z")
             .unwrap()
@@ -656,8 +671,40 @@ mod tests {
             .collect();
         let include_balances = false;
 
-        let res = tta_service.get_txns_report(start_date, end_date, accounts, include_balances);
+        let mut accounts_metadata = HashMap::new();
+        let mut account_txns = HashMap::new();
 
-        assert!(res.await.is_ok());
+        account_txns.insert(
+            "51VVGwLAFX6K62jB84E6qVHdF4GbhEMB2CoZJ9ZziiEt".to_string(),
+            "unit test".to_string(),
+        );
+
+        accounts_metadata.insert("nf-payments.near".to_string(), account_txns);
+
+        let metadata_struct = Arc::new(RwLock::new(TxnsReportWithMetadata {
+            metadata: accounts_metadata,
+        }));
+
+        let res = tta_service
+            .get_txns_report(
+                start_date,
+                end_date,
+                accounts,
+                include_balances,
+                metadata_struct,
+            )
+            .await
+            .unwrap();
+
+        assert!(!res.is_empty());
+
+        for row in res {
+            if row.transaction_hash == "51VVGwLAFX6K62jB84E6qVHdF4GbhEMB2CoZJ9ZziiEt" {
+                assert_eq!(row.metadata, Some("unit test".to_string()));
+            } else {
+                assert_eq!(row.metadata, None);
+            }
+        }
+        Ok(())
     }
 }

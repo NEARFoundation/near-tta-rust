@@ -1,7 +1,5 @@
-use anyhow::Result;
-use axum::{response::IntoResponse, Router};
 use csv::Writer;
-use hyper::{Body, Response};
+use hyper::Body;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -12,15 +10,24 @@ use tta::models::ReportRow;
 
 use axum::{
     extract::{Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::get,
+    routing::post,
+    Json, Router,
 };
+
 use chrono::DateTime;
 use dotenvy::dotenv;
 
 use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
 use serde::Deserialize;
 use sqlx::postgres::PgPoolOptions;
-use std::{collections::HashSet, env, fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+    sync::{Arc, RwLock},
+};
 use tokio::{spawn, sync::Semaphore};
 use tracing::*;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, FmtSubscriber};
@@ -31,7 +38,7 @@ use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient};
 pub mod tta;
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> anyhow::Result<()> {
     info!("Starting up");
 
     match dotenv() {
@@ -92,7 +99,7 @@ fn init_tracing() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn router() -> Result<Router> {
+async fn router() -> anyhow::Result<Router> {
     let pool = PgPoolOptions::new()
         .max_connections(30)
         .connect(env!("DATABASE_URL"))
@@ -110,12 +117,16 @@ async fn router() -> Result<Router> {
     let middleware = ServiceBuilder::new().layer(trace).layer(cors);
 
     Ok(Router::new()
+        .route("/tta", post(get_txns_report))
         .route("/tta", get(get_txns_report))
         .with_state(tta_service)
         .layer(middleware))
 }
 
 // HTTP layer
+type AccountID = String;
+type TransactionID = String;
+type Metadata = HashMap<AccountID, HashMap<TransactionID, String>>;
 
 #[derive(Debug, Deserialize)]
 struct TxnsReportParams {
@@ -125,10 +136,16 @@ struct TxnsReportParams {
     pub include_balances: Option<bool>,
 }
 
+#[derive(Debug, Deserialize, Default, Clone)]
+struct TxnsReportWithMetadata {
+    pub metadata: Metadata,
+}
+
 async fn get_txns_report(
     Query(params): Query<TxnsReportParams>,
     State(tta_service): State<TTA>,
-) -> Result<impl IntoResponse, Response<Body>> {
+    metadata_body: Option<Json<TxnsReportWithMetadata>>,
+) -> Result<Response<Body>, AppError> {
     let start_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.start_date)
         .unwrap()
         .into();
@@ -145,39 +162,61 @@ async fn get_txns_report(
 
     let include_balances = params.include_balances.unwrap_or(false);
 
+    let metadata = Arc::new(RwLock::new(metadata_body.unwrap_or_default().0));
+
     let csv_data = tta_service
         .get_txns_report(
             start_date.timestamp_nanos() as u128,
             end_date.timestamp_nanos() as u128,
             accounts,
             include_balances,
+            metadata,
         )
-        .await
-        .unwrap();
+        .await?;
 
     // Create a Writer with a Vec<u8> as the underlying writer
     let mut wtr = Writer::from_writer(Vec::new());
 
     // Write the headers
-    wtr.write_record(&ReportRow::get_vec_headers()).unwrap();
+    wtr.write_record(&ReportRow::get_vec_headers())?;
 
     // Write each row
     for row in csv_data {
         let record: Vec<String> = row.to_vec();
-        wtr.write_record(&record).unwrap();
+        wtr.write_record(&record)?;
     }
 
     // Get the CSV data
-    let csv_data = wtr.into_inner().unwrap();
+    let csv_data = wtr.into_inner()?;
 
     // Create a response with the CSV data
     let response = Response::builder()
         .header("Content-Type", "text/csv")
         .header("Content-Disposition", "attachment; filename=data.csv")
-        .body(Body::from(csv_data))
-        .unwrap();
+        .body(Body::from(csv_data))?;
 
     Ok(response)
+}
+
+struct AppError(anyhow::Error);
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Something went wrong: {}", self.0),
+        )
+            .into_response()
+    }
+}
+
+impl<E> From<E> for AppError
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(err: E) -> Self {
+        Self(err.into())
+    }
 }
 
 #[cfg(test)]
@@ -189,10 +228,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_tta_router() {
-        let subscriber = FmtSubscriber::builder().finish();
-
-        tracing::subscriber::set_global_default(subscriber).unwrap();
-
         let router = router().await.unwrap();
         let client = TestClient::new(router);
         let res = client.get("/tta?start_date=2023-01-01T00:00:00Z&end_date=2023-02-01T00:00:00Z&accounts=nf-payments.near&include_balances=false").send().await;
@@ -201,12 +236,8 @@ mod tests {
 
     #[tokio::test]
     async fn loadtest_tta() {
-        let subscriber = FmtSubscriber::builder().finish();
-
-        tracing::subscriber::set_global_default(subscriber).unwrap();
         let router = router().await.unwrap();
-
-        let request_url = "/tta?start_date=2023-01-01T00:00:00Z&end_date=2023-02-01T00:00:00Z&accounts=nf-payments.near&include_balances=true";
+        let request_url = "/tta?start_date=2023-01-01T00:00:00Z&end_date=2023-02-01T00:00:00Z&accounts=nf-payments.near&include_balances=false";
 
         let futures = (0..20)
             .map(|_| {
