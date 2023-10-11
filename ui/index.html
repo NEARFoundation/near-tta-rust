@@ -28,6 +28,10 @@
             <p class="text-sm text-red-500">
                 Note: Reports with balances may take significantly longer to generate.
             </p>
+
+
+
+
             <button onclick="handleDownloadClick()" id="downloadButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
                 Download report as CSV
             </button>
@@ -37,6 +41,10 @@
               Get start and end balances
             </button>
 
+            <div id="loadingIndicator" hidden>
+              Loading... Takes around 30 seconds
+            </div>
+            
             <div id="balancesSection" class="mt-10 p-5 border rounded shadow-md bg-white" hidden>
               <h2 class="text-lg font-semibold mb-5">Account Balances:</h2>
               <div id="accountBalances">
@@ -105,6 +113,8 @@
       }
 
       const handleGetBalances = async() => {
+        const loadingIndicator = document.getElementById("loadingIndicator");
+        loadingIndicator.removeAttribute("hidden");
         // connect to NEAR
         const near = new nearApi.Near({
           keyStore: new nearApi.keyStores.BrowserLocalStorageKeyStore(),
@@ -138,7 +148,7 @@
 
               const args = { account_id: accountId };
               const base64Args = btoa(JSON.stringify(args));
-              
+
               let balance = 0;
               try {
                 const balance_raw = await near.connection.provider.query({
@@ -181,6 +191,7 @@
 
           return {accountId, balances};
         }));
+        loadingIndicator.setAttribute("hidden", true);
 
         console.log(JSON.stringify(balances_each_acc));
         const balancesElement = document.getElementById("accountBalances");
