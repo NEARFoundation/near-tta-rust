@@ -1,10 +1,13 @@
 use std::collections::{self};
 
 use anyhow::Result;
+use num_traits::cast::ToPrimitive;
 use sqlx::{types::Decimal, Pool, Postgres};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 use tracing::{error, info, instrument};
+
+use crate::tta::sql::models::BlockId;
 
 use super::models::Transaction;
 
@@ -344,5 +347,26 @@ impl SqlClient {
         );
 
         Ok(())
+    }
+
+    #[instrument(skip(self))]
+    pub async fn get_closest_block_id(&self, date: u128) -> Result<u128> {
+        let date_decimal = Decimal::from(date);
+
+        let block = sqlx::query_as!(
+            BlockId,
+            r##"
+            SELECT block_height
+            FROM blocks
+            WHERE block_timestamp >= $1
+            ORDER BY block_timestamp ASC
+            LIMIT 1;
+            "##,
+            &date_decimal,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(block.block_height.to_u128().unwrap())
     }
 }

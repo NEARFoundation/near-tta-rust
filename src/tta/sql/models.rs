@@ -1,4 +1,3 @@
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::{types::Decimal, Type};
@@ -532,4 +531,11 @@ pub enum ExecutionOutcomeStatus {
     Failure,
     SuccessValue,
     SuccessReceiptId,
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BlockId {
+    #[serde(rename = "block_ud", default)]
+    pub block_height: Decimal,
 }

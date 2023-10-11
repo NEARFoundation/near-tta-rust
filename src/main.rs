@@ -110,7 +110,7 @@ async fn router() -> anyhow::Result<Router> {
     let ft_service = FtService::new(near_client);
     let semaphore = Arc::new(Semaphore::new(30));
 
-    let tta_service = TTA::new(sql_client, ft_service, semaphore);
+    let tta_service = TTA::new(sql_client.clone(), ft_service, semaphore);
 
     let trace = TraceLayer::new_for_http();
     let cors = CorsLayer::new().allow_methods(Any).allow_origin(Any);
@@ -120,6 +120,8 @@ async fn router() -> anyhow::Result<Router> {
         .route("/tta", post(get_txns_report))
         .route("/tta", get(get_txns_report))
         .with_state(tta_service)
+        .route("/likelyBlockId", get(get_closest_block_id))
+        .with_state(sql_client)
         .layer(middleware))
 }
 
@@ -196,6 +198,21 @@ async fn get_txns_report(
         .body(Body::from(csv_data))?;
 
     Ok(response)
+}
+
+#[derive(Debug, Deserialize)]
+struct ClosestBlockIdParams {
+    pub date: String,
+}
+
+async fn get_closest_block_id(
+    Query(params): Query<ClosestBlockIdParams>,
+    State(sql_client): State<SqlClient>,
+) -> Result<Response<Body>, AppError> {
+    let date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.date).unwrap().into();
+    let nanos = date.timestamp_nanos() as u128;
+    let d = sql_client.get_closest_block_id(nanos).await?;
+    Ok(Response::new(Body::from(d.to_string())))
 }
 
 struct AppError(anyhow::Error);
