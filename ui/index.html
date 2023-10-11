@@ -6,10 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NEAR transaction report</title>
     <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio,line-clamp"></script>
-</head>
+    <script src="https://cdn.jsdelivr.net/npm/near-api-js@0.45.1/dist/near-api-js.min.js"></script>
+  </head>
 
 <body>
-    <div class="prose flex flex-col p-3">
+    <div class="flex flex-col p-3">
         <h1>NEAR transaction report</h1>
         <div class="flex flex-col items-center justify-center gap-3">
             <div class="inline-flex items-center gap-1">
@@ -30,6 +31,19 @@
             <button onclick="handleDownloadClick()" id="downloadButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
                 Download report as CSV
             </button>
+
+
+            <button onclick="handleGetBalances()" id="getBalancesButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
+              Get start and end balances
+            </button>
+
+            <div id="balancesSection" class="mt-10 p-5 border rounded shadow-md bg-white" hidden>
+              <h2 class="text-lg font-semibold mb-5">Account Balances:</h2>
+              <div id="accountBalances">
+                  <!-- Balances will be appended here -->
+              </div>
+          </div>
+        
         </div>
     </div>
 
@@ -88,6 +102,151 @@
               downloadButton.disabled = false;
               downloadButton.innerText = "Download report as CSV";
           });
+      }
+
+      const handleGetBalances = async() => {
+        // connect to NEAR
+        const near = new nearApi.Near({
+          keyStore: new nearApi.keyStores.BrowserLocalStorageKeyStore(),
+          networkId: 'mainnet',
+          nodeUrl: 'https://archival-rpc.mainnet.near.org',
+        });
+        
+        // connect to the NEAR Wallet
+        const wallet = new nearApi.WalletConnection(near, 'my-app');
+        const accountIds = document.getElementById("accountIds").value.split(/,|\n/);
+        const start_date = new Date(document.getElementById("startDate").value + "T00:00:00Z").toISOString();
+        const end_date = new Date(document.getElementById("endDate").value + "T00:00:00Z").toISOString();
+
+        const block_id_start = await fetch(`https://tta-api.onrender.com/likelyBlockId?date=${start_date}`).then(response => response.json());
+        const block_id_end = await fetch(`https://tta-api.onrender.com/likelyBlockId?date=${end_date}`).then(response => response.json());
+        console.log(block_id_start);
+        const balances_each_acc = await Promise.all(accountIds.map(async (accountId) => {
+          const tokens = await fetch(`https://api.kitwallet.app/account/${accountId}/likelyTokens`).then(response => response.json());
+
+          const balances = (await Promise.all(tokens.map(async (tokenId) => {
+
+            try {
+              const metadata_raw = await near.connection.provider.query({
+                request_type: "call_function",
+                block_id: block_id_end,
+                account_id: tokenId,
+                method_name: "ft_metadata",
+                args_base64: "e30=",
+              });
+              const metadata = JSON.parse(decodeResult(metadata_raw.result));
+
+              const args = { account_id: accountId };
+              const base64Args = btoa(JSON.stringify(args));
+              
+              let balance = 0;
+              try {
+                const balance_raw = await near.connection.provider.query({
+                  request_type: "call_function",
+                  block_id: block_id_start,
+                  account_id: tokenId,
+                  method_name: "ft_balance_of",
+                  args_base64: base64Args,
+                });
+                balance = Number(JSON.parse(decodeResult(balance_raw.result)));
+              } catch {
+                balance = 0;
+              }
+
+              const b_start = (balance / Math.pow(10, metadata.decimals)).toLocaleString() + " " + metadata.symbol;
+              
+
+              
+              const balance_end_raw = await near.connection.provider.query({
+                request_type: "call_function",
+                block_id: block_id_end,
+                account_id: tokenId,
+                method_name: "ft_balance_of",
+                args_base64: base64Args,
+              });
+              const balance_end = Number(JSON.parse(decodeResult(balance_end_raw.result)));
+              const b_end = (balance_end / Math.pow(10, metadata.decimals)).toLocaleString() + " " + metadata.symbol;
+              
+
+              return {
+                tokenId,
+                balance_start: b_start,
+                balance_end: b_end,
+              };
+            } catch (e){
+              console.error(e);
+              return;
+            }
+          }))).filter(Boolean);
+
+          return {accountId, balances};
+        }));
+
+        console.log(JSON.stringify(balances_each_acc));
+        const balancesElement = document.getElementById("accountBalances");
+        balancesElement.innerHTML = "";  // Clear any previous balances
+
+
+        if (balances_each_acc.length > 0) {
+            document.getElementById("balancesSection").removeAttribute("hidden");
+        } else {
+            document.getElementById("balancesSection").setAttribute("hidden", true);
+            return;  // Exit if there are no balances to show.
+        }
+        
+balances_each_acc.forEach(account => {
+    const accountDiv = document.createElement("div");
+    accountDiv.className = "mb-4 border-b pb-3";
+
+    const accountHeader = document.createElement("h3");
+    accountHeader.className = "text-blue-600 font-medium";
+    accountHeader.textContent = account.accountId;
+    accountDiv.appendChild(accountHeader);
+
+    // Create a table for structured data display
+    const balanceTable = document.createElement("table");
+    balanceTable.className = "ml-4 mt-2 w-full text-gray-700";
+    const thead = document.createElement("thead");
+    const tbody = document.createElement("tbody");
+    balanceTable.appendChild(thead);
+    balanceTable.appendChild(tbody);
+
+    const headerRow = document.createElement("tr");
+    const tokenHeader = document.createElement("th");
+    tokenHeader.textContent = "Token";
+    const startBalHeader = document.createElement("th");
+    startBalHeader.textContent = "Start Balance";
+    const endBalHeader = document.createElement("th");
+    endBalHeader.textContent = "End Balance";
+    headerRow.appendChild(tokenHeader);
+    headerRow.appendChild(startBalHeader);
+    headerRow.appendChild(endBalHeader);
+    thead.appendChild(headerRow);
+
+    account.balances.forEach(token => {
+        const tokenRow = document.createElement("tr");
+
+        const tokenNameCell = document.createElement("td");
+        tokenNameCell.textContent = token.tokenId;
+        const startBalanceCell = document.createElement("td");
+        startBalanceCell.textContent = token.balance_start;
+        const endBalanceCell = document.createElement("td");
+        endBalanceCell.textContent = token.balance_end;
+
+        tokenRow.appendChild(tokenNameCell);
+        tokenRow.appendChild(startBalanceCell);
+        tokenRow.appendChild(endBalanceCell);
+        
+        tbody.appendChild(tokenRow);
+    });
+
+    accountDiv.appendChild(balanceTable);
+    balancesElement.appendChild(accountDiv);
+});
+      }
+
+      const decodeResult = (resultArray) => {
+          return String.fromCharCode.apply(null, resultArray);
       }
     </script>
 </body>
