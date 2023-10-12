@@ -29,22 +29,13 @@
                 Note: Reports with balances may take significantly longer to generate.
             </p>
 
-
-
-
             <button onclick="handleDownloadClick()" id="downloadButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
                 Download report as CSV
             </button>
 
-
             <button onclick="handleGetBalancesCsv()" id="getBalancesButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
               Get start and end balances
-            </button>
-
-            <div id="loadingIndicator" hidden>
-              Loading... Takes around 30 seconds
-            </div>
-        
+            </button>        
         </div>
     </div>
 
@@ -150,7 +141,6 @@
               downloadButton.innerText = "Download report as CSV";
           });
       }
-
     </script>
 </body>
 
