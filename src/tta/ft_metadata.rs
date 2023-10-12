@@ -20,7 +20,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info};
 
 use std::hash::{Hash, Hasher};
 
@@ -99,8 +99,8 @@ impl FtService {
             .await
             .contains_key(ft_token_id)
         {
+            self.archival_rate_limiter.write().await.until_ready().await;
             let args = json!({}).to_string().into_bytes();
-
             let result = match view_function_call(
                 &self.near_client,
                 QueryRequest::CallFunction {
@@ -141,16 +141,6 @@ impl FtService {
         account_id: &String,
         block_id: u64,
     ) -> Result<f64> {
-        debug!("Getting ft_balance");
-
-        let w = self.archival_rate_limiter.clone();
-        let lock = w.write().await;
-        debug!("Waiting for rate limiter");
-
-        lock.until_ready().await;
-
-        debug!("Rate limiter gave green light");
-
         if self
             .ft_balances_cache
             .clone()
@@ -162,9 +152,8 @@ impl FtService {
                 token_id: token_id.clone(),
             })
         {
-            warn!("Found ft_balance in cache");
-            let w = self.ft_balances_cache.clone();
-            let mut w = w.write().await;
+            debug!("Found ft_balance in cache");
+            let mut w = self.ft_balances_cache.write().await;
             return Ok(*w
                 .get(&CompositeKey {
                     block_id,
@@ -173,11 +162,11 @@ impl FtService {
                 })
                 .unwrap());
         }
-
         let metadata = self.assert_ft_metadata(token_id).await.unwrap();
 
+        self.archival_rate_limiter.write().await.until_ready().await;
         let args = json!({ "account_id": account_id }).to_string().into_bytes();
-
+        info!("Calling ft_balance_of");
         let result = match view_function_call(
             &self.near_client,
             QueryRequest::CallFunction {
@@ -199,16 +188,12 @@ impl FtService {
             }
         };
 
-        drop(lock);
-
         let amount: String = serde_json::from_slice(&result)?;
         let amount = amount.parse::<u128>()?;
         let amount = safe_divide_u128(amount, metadata.decimals as u32);
 
         debug!("Got ft_balance amount: {}", amount);
-
-        let w = self.ft_balances_cache.clone();
-        let mut w = w.write().await;
+        let mut w = self.ft_balances_cache.write().await;
         w.put(
             CompositeKey {
                 block_id,

@@ -37,26 +37,19 @@
             </button>
 
 
-            <button onclick="handleGetBalances()" id="getBalancesButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
+            <button onclick="handleGetBalancesCsv()" id="getBalancesButton" class="w-1/2 rounded bg-blue-100 px-2 py-1 hover:bg-blue-300">
               Get start and end balances
             </button>
 
             <div id="loadingIndicator" hidden>
               Loading... Takes around 30 seconds
             </div>
-            
-            <div id="balancesSection" class="mt-10 p-5 border rounded shadow-md bg-white" hidden>
-              <h2 class="text-lg font-semibold mb-5">Account Balances:</h2>
-              <div id="accountBalances">
-                  <!-- Balances will be appended here -->
-              </div>
-          </div>
         
         </div>
     </div>
 
     <script>
-        const TTA_URL = "https://tta-api.onrender.com";
+        const TTA_URL = "http://127.0.0.1:3000";
         
         const handleDownloadClick = async () => {
           const downloadButton = document.getElementById("downloadButton");
@@ -112,153 +105,52 @@
           });
       }
 
-      const handleGetBalances = async() => {
-        const loadingIndicator = document.getElementById("loadingIndicator");
-        loadingIndicator.removeAttribute("hidden");
-        // connect to NEAR
-        const near = new nearApi.Near({
-          keyStore: new nearApi.keyStores.BrowserLocalStorageKeyStore(),
-          networkId: 'mainnet',
-          nodeUrl: 'https://archival-rpc.mainnet.near.org',
-        });
-        
-        // connect to the NEAR Wallet
-        const wallet = new nearApi.WalletConnection(near, 'my-app');
-        const accountIds = document.getElementById("accountIds").value.split(/,|\n/);
-        const start_date = new Date(document.getElementById("startDate").value + "T00:00:00Z").toISOString();
-        const end_date = new Date(document.getElementById("endDate").value + "T00:00:00Z").toISOString();
+      const handleGetBalancesCsv = async () => {
+          const downloadButton = document.getElementById("getBalancesButton");
+          const startDateInput = document.getElementById("startDate");
+          const endDateInput = document.getElementById("endDate");
+          const accountIdsTextArea = document.getElementById("accountIds");
 
-        const block_id_start = await fetch(`https://tta-api.onrender.com/likelyBlockId?date=${start_date}`).then(response => response.json());
-        const block_id_end = await fetch(`https://tta-api.onrender.com/likelyBlockId?date=${end_date}`).then(response => response.json());
-        console.log(block_id_start);
-        const balances_each_acc = await Promise.all(accountIds.map(async (accountId) => {
-          const tokens = await fetch(`https://api.kitwallet.app/account/${accountId}/likelyTokens`).then(response => response.json());
+          downloadButton.disabled = true;
+          downloadButton.innerText = "Loading, usually 20 seconds per account...";
 
-          const balances = (await Promise.all(tokens.map(async (tokenId) => {
-
-            try {
-              const metadata_raw = await near.connection.provider.query({
-                request_type: "call_function",
-                block_id: block_id_end,
-                account_id: tokenId,
-                method_name: "ft_metadata",
-                args_base64: "e30=",
-              });
-              const metadata = JSON.parse(decodeResult(metadata_raw.result));
-
-              const args = { account_id: accountId };
-              const base64Args = btoa(JSON.stringify(args));
-
-              let balance = 0;
-              try {
-                const balance_raw = await near.connection.provider.query({
-                  request_type: "call_function",
-                  block_id: block_id_start,
-                  account_id: tokenId,
-                  method_name: "ft_balance_of",
-                  args_base64: base64Args,
-                });
-                balance = Number(JSON.parse(decodeResult(balance_raw.result)));
-              } catch {
-                balance = 0;
-              }
-
-              const b_start = (balance / Math.pow(10, metadata.decimals)).toLocaleString() + " " + metadata.symbol;
-              
-
-              
-              const balance_end_raw = await near.connection.provider.query({
-                request_type: "call_function",
-                block_id: block_id_end,
-                account_id: tokenId,
-                method_name: "ft_balance_of",
-                args_base64: base64Args,
-              });
-              const balance_end = Number(JSON.parse(decodeResult(balance_end_raw.result)));
-              const b_end = (balance_end / Math.pow(10, metadata.decimals)).toLocaleString() + " " + metadata.symbol;
-              
-
-              return {
-                tokenId,
-                balance_start: b_start,
-                balance_end: b_end,
-              };
-            } catch (e){
-              console.error(e);
+          if (!startDateInput.value || !endDateInput.value) {
+              alert("Please select valid start and end dates");
               return;
-            }
-          }))).filter(Boolean);
+          }
 
-          return {accountId, balances};
-        }));
-        loadingIndicator.setAttribute("hidden", true);
+          const start = new Date(startDateInput.value + "T00:00:00Z").toISOString();
+          const end = new Date(endDateInput.value + "T00:00:00Z").toISOString();
 
-        console.log(JSON.stringify(balances_each_acc));
-        const balancesElement = document.getElementById("accountBalances");
-        balancesElement.innerHTML = "";  // Clear any previous balances
+          const accountIdsArray = accountIdsTextArea.value.replaceAll(" ", "").split(/,|\n/);
+          const commaSeparatedAccountIds = accountIdsArray.join(",");
 
+          const url = `${TTA_URL}/balances?start_date=${start}&end_date=${end}&accounts=${commaSeparatedAccountIds}`;
 
-        if (balances_each_acc.length > 0) {
-            document.getElementById("balancesSection").removeAttribute("hidden");
-        } else {
-            document.getElementById("balancesSection").setAttribute("hidden", true);
-            return;  // Exit if there are no balances to show.
-        }
-        
-balances_each_acc.forEach(account => {
-    const accountDiv = document.createElement("div");
-    accountDiv.className = "mb-4 border-b pb-3";
-
-    const accountHeader = document.createElement("h3");
-    accountHeader.className = "text-blue-600 font-medium";
-    accountHeader.textContent = account.accountId;
-    accountDiv.appendChild(accountHeader);
-
-    // Create a table for structured data display
-    const balanceTable = document.createElement("table");
-    balanceTable.className = "ml-4 mt-2 w-full text-gray-700";
-    const thead = document.createElement("thead");
-    const tbody = document.createElement("tbody");
-    balanceTable.appendChild(thead);
-    balanceTable.appendChild(tbody);
-
-    const headerRow = document.createElement("tr");
-    const tokenHeader = document.createElement("th");
-    tokenHeader.textContent = "Token";
-    const startBalHeader = document.createElement("th");
-    startBalHeader.textContent = "Start Balance";
-    const endBalHeader = document.createElement("th");
-    endBalHeader.textContent = "End Balance";
-    headerRow.appendChild(tokenHeader);
-    headerRow.appendChild(startBalHeader);
-    headerRow.appendChild(endBalHeader);
-    thead.appendChild(headerRow);
-
-    account.balances.forEach(token => {
-        const tokenRow = document.createElement("tr");
-
-        const tokenNameCell = document.createElement("td");
-        tokenNameCell.textContent = token.tokenId;
-        const startBalanceCell = document.createElement("td");
-        startBalanceCell.textContent = token.balance_start;
-        const endBalanceCell = document.createElement("td");
-        endBalanceCell.textContent = token.balance_end;
-
-        tokenRow.appendChild(tokenNameCell);
-        tokenRow.appendChild(startBalanceCell);
-        tokenRow.appendChild(endBalanceCell);
-        
-        tbody.appendChild(tokenRow);
-    });
-
-    accountDiv.appendChild(balanceTable);
-    balancesElement.appendChild(accountDiv);
-});
+          fetch(url, { method: "GET" }).then(response => {
+              const contentDisposition = response.headers.get("Content-Disposition");
+              if (response.ok) {
+                  return response.blob().then(blob => [blob, contentDisposition]);
+              }
+              throw new Error("Network response was not ok");
+          }).then(([blob, contentDisposition]) => {
+              const url = window.URL.createObjectURL(blob);
+              let filename = "balances.csv";
+              
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+          }).catch(error => {
+              console.error("Error:", error);
+          }).finally(() => {
+              downloadButton.disabled = false;
+              downloadButton.innerText = "Download report as CSV";
+          });
       }
 
-      const decodeResult = (resultArray) => {
-          return String.fromCharCode.apply(null, resultArray);
-      }
     </script>
 </body>
 

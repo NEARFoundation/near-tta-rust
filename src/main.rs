@@ -20,8 +20,9 @@ use axum::{
 use chrono::DateTime;
 use dotenvy::dotenv;
 
+use futures_util::future::join_all;
 use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use std::{
     collections::{HashMap, HashSet},
@@ -106,11 +107,12 @@ async fn router() -> anyhow::Result<Router> {
         .await?;
 
     let sql_client = SqlClient::new(pool);
-    let near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
-    let ft_service = FtService::new(near_client);
+    let archival_near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
+    // let near_client = JsonRpcClient::connect(NEAR_MAINNET_RPC_URL);
+    let ft_service = FtService::new(archival_near_client);
     let semaphore = Arc::new(Semaphore::new(30));
 
-    let tta_service = TTA::new(sql_client.clone(), ft_service, semaphore);
+    let tta_service = TTA::new(sql_client.clone(), ft_service.clone(), semaphore);
 
     let trace = TraceLayer::new_for_http();
     let cors = CorsLayer::new().allow_methods(Any).allow_origin(Any);
@@ -121,7 +123,9 @@ async fn router() -> anyhow::Result<Router> {
         .route("/tta", get(get_txns_report))
         .with_state(tta_service)
         .route("/likelyBlockId", get(get_closest_block_id))
-        .with_state(sql_client)
+        .with_state(sql_client.clone())
+        .route("/balances", get(get_balances))
+        .with_state((sql_client, ft_service.clone()))
         .layer(middleware))
 }
 
@@ -213,6 +217,143 @@ async fn get_closest_block_id(
     let nanos = date.timestamp_nanos() as u128;
     let d = sql_client.get_closest_block_id(nanos).await?;
     Ok(Response::new(Body::from(d.to_string())))
+}
+
+#[derive(Debug, Deserialize)]
+struct GetBalances {
+    pub start_date: String,
+    pub end_date: String,
+    pub accounts: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct GetBalancesResultRow {
+    pub account: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub start_block_id: u128,
+    pub end_block_id: u128,
+    pub token_id: String,
+    pub symbol: String,
+    pub start_balance: f64,
+    pub end_balance: f64,
+}
+
+async fn get_balances(
+    Query(params): Query<GetBalances>,
+    State((sql_client, ft_service)): State<(SqlClient, FtService)>,
+) -> Result<Response<Body>, AppError> {
+    let start_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.start_date)
+        .unwrap()
+        .into();
+    let end_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.end_date)
+        .unwrap()
+        .into();
+    let start_nanos = start_date.timestamp_nanos() as u128;
+    let end_nanos = end_date.timestamp_nanos() as u128;
+
+    let start_block_id = sql_client.get_closest_block_id(start_nanos).await?;
+    let end_block_id = sql_client.get_closest_block_id(end_nanos).await?;
+
+    let accounts: HashSet<String> = params
+        .accounts
+        .split(',')
+        .map(String::from)
+        .filter(|account| account != "near" && account != "system")
+        .collect();
+
+    let client = reqwest::Client::new();
+    let mut handles = vec![];
+    for account in accounts {
+        let client = client.clone();
+        let ft_service = ft_service.clone();
+        let start_block_id = start_block_id;
+        let end_block_id = end_block_id;
+
+        let handle = spawn(async move {
+            let mut rows: Vec<GetBalancesResultRow> = vec![];
+            let _a = account.clone();
+            let likely_tokens = client
+                .get(format!(
+                    "https://api.kitwallet.app/account/{account}/likelyTokens"
+                ))
+                .send()
+                .await?
+                .json::<Vec<String>>()
+                .await?;
+            info!("{}: {:?}", account, likely_tokens);
+            for token in likely_tokens {
+                let metadata = match ft_service.assert_ft_metadata(&token).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        debug!("{}: {}", account, e);
+                        continue;
+                    }
+                };
+                let start_balance = match ft_service
+                    .assert_ft_balance(&token, &account, start_block_id as u64)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        debug!("{}: {}", account, e);
+                        0.0
+                    }
+                };
+                let end_balance = match ft_service
+                    .assert_ft_balance(&token, &account, end_block_id as u64)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => {
+                        debug!("{}: {}", account, e);
+                        0.0
+                    }
+                };
+                let record = GetBalancesResultRow {
+                    account: account.clone(),
+                    start_date: start_date.to_rfc3339(),
+                    end_date: end_date.to_rfc3339(),
+                    start_block_id,
+                    end_block_id,
+                    start_balance,
+                    end_balance,
+                    token_id: token.clone(),
+                    symbol: metadata.symbol,
+                };
+                rows.push(record)
+            }
+            println!("{:?}", rows);
+            anyhow::Ok(rows)
+        });
+        handles.push(handle);
+    }
+
+    let mut rows = vec![];
+
+    join_all(handles).await.iter().for_each(|row| match row {
+        Ok(result) => match result {
+            Ok(res) => rows.extend(res.iter().cloned()),
+            Err(e) => {
+                println!("{:?}", e)
+            }
+        },
+        Err(e) => {
+            warn!("{:?}", e)
+        }
+    });
+
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    for row in rows {
+        wtr.serialize(row).unwrap();
+    }
+    wtr.flush()?;
+    // Create a response with the CSV data
+    let response = Response::builder()
+        .header("Content-Type", "text/csv")
+        // .header("Content-Disposition", "attachment; filename=data.csv")
+        .body(Body::from(wtr.into_inner().unwrap()))?;
+    Ok(response)
 }
 
 struct AppError(anyhow::Error);
