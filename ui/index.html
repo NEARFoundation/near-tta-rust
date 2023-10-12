@@ -49,7 +49,7 @@
     </div>
 
     <script>
-        const TTA_URL = "http://127.0.0.1:3000";
+        const TTA_URL = "https://tta-api.onrender.com";
         
         const handleDownloadClick = async () => {
           const downloadButton = document.getElementById("downloadButton");
@@ -136,7 +136,7 @@
           }).then(([blob, contentDisposition]) => {
               const url = window.URL.createObjectURL(blob);
               let filename = "balances.csv";
-              
+
               const a = document.createElement("a");
               a.href = url;
               a.download = filename;
