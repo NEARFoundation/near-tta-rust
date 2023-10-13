@@ -10,7 +10,7 @@ use near_primitives::{
         Finality::{self},
         FunctionArgs,
     },
-    views::{CallResult, QueryRequest},
+    views::{AccountView, CallResult, QueryRequest},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -205,6 +205,34 @@ impl FtService {
 
         Ok(amount)
     }
+
+    pub async fn get_near_balance(&self, account_id: &str, block_id: u64) -> Result<f64> {
+        self.archival_rate_limiter.write().await.until_ready().await;
+        let RpcQueryResponse { kind, .. } = match self
+            .near_client
+            .call(RpcQueryRequest {
+                request: QueryRequest::ViewAccount {
+                    account_id: account_id.parse().unwrap(),
+                },
+                block_reference: BlockReference::BlockId(Height(block_id)),
+            })
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                bail!("Error calling ViewAccount: {:?}", e);
+            }
+        };
+        let amount = match kind {
+            QueryResponseKind::ViewAccount(AccountView { amount, .. }) => amount,
+            _ => {
+                bail!("Received unexpected kind: {:?}", kind); // <-- Add this line
+            }
+        };
+
+        let amount = safe_divide_u128(amount, 24);
+        Ok(amount)
+    }
 }
 
 pub async fn view_function_call(
@@ -229,9 +257,11 @@ pub async fn view_function_call(
         }
     };
 
-    let QueryResponseKind::CallResult(CallResult{result, ..}) = kind else {
-      bail!("Unexpected response kind");
-    };
-
-    Ok(result)
+    match kind {
+        QueryResponseKind::CallResult(CallResult { result, .. }) => Ok(result),
+        _ => {
+            eprintln!("Received unexpected kind: {:?}", kind); // <-- Add this line
+            bail!("Unexpected response kind");
+        }
+    }
 }

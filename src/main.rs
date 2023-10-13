@@ -264,6 +264,7 @@ async fn get_balances(
 
     let client = reqwest::Client::new();
     let mut handles = vec![];
+
     for account in accounts {
         let client = client.clone();
         let ft_service = ft_service.clone();
@@ -271,8 +272,9 @@ async fn get_balances(
         let end_block_id = end_block_id;
 
         let handle = spawn(async move {
+            info!("Getting balances for {}", account);
             let mut rows: Vec<GetBalancesResultRow> = vec![];
-            let _a = account.clone();
+
             let likely_tokens = client
                 .get(format!(
                     "https://api.kitwallet.app/account/{account}/likelyTokens"
@@ -281,56 +283,107 @@ async fn get_balances(
                 .await?
                 .json::<Vec<String>>()
                 .await?;
-            info!("{}: {:?}", account, likely_tokens);
-            for token in likely_tokens {
-                let metadata = match ft_service.assert_ft_metadata(&token).await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        debug!("{}: {}", account, e);
-                        continue;
+            info!("Account {} likely tokens: {:?}", account, likely_tokens);
+
+            let token_handles: Vec<_> = likely_tokens
+                .iter()
+                .map(|token| {
+                    let token = token.clone();
+                    let account = account.clone();
+                    let ft_service = ft_service.clone();
+                    async move {
+                        let metadata = match ft_service.assert_ft_metadata(&token).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                debug!("{}: {}", account, e);
+                                return Err(e);
+                            }
+                        };
+                        let start_balance = match ft_service
+                            .assert_ft_balance(&token, &account, start_block_id as u64)
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                debug!("{}: {}", account, e);
+                                0.0
+                            }
+                        };
+                        let end_balance = match ft_service
+                            .assert_ft_balance(&token, &account, end_block_id as u64)
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                debug!("{}: {}", account, e);
+                                0.0
+                            }
+                        };
+                        let record = GetBalancesResultRow {
+                            account: account.clone(),
+                            start_date: start_date.to_rfc3339(),
+                            end_date: end_date.to_rfc3339(),
+                            start_block_id,
+                            end_block_id,
+                            start_balance,
+                            end_balance,
+                            token_id: token.clone(),
+                            symbol: metadata.symbol,
+                        };
+                        Ok(record)
                     }
-                };
-                let start_balance = match ft_service
-                    .assert_ft_balance(&token, &account, start_block_id as u64)
-                    .await
-                {
-                    Ok(v) => v,
+                })
+                .collect();
+
+            let token_results: Vec<_> = join_all(token_handles).await;
+            for result in token_results {
+                match result {
+                    Ok(record) => rows.push(record),
                     Err(e) => {
-                        debug!("{}: {}", account, e);
-                        0.0
+                        debug!("Token fetch error: {:?}", e);
                     }
-                };
-                let end_balance = match ft_service
-                    .assert_ft_balance(&token, &account, end_block_id as u64)
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        debug!("{}: {}", account, e);
-                        0.0
-                    }
-                };
-                let record = GetBalancesResultRow {
-                    account: account.clone(),
-                    start_date: start_date.to_rfc3339(),
-                    end_date: end_date.to_rfc3339(),
-                    start_block_id,
-                    end_block_id,
-                    start_balance,
-                    end_balance,
-                    token_id: token.clone(),
-                    symbol: metadata.symbol,
-                };
-                rows.push(record)
+                }
             }
-            println!("{:?}", rows);
+
+            let start_near_balance = match ft_service
+                .get_near_balance(&account, start_block_id as u64)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("{}: {}", account, e);
+                    0.0
+                }
+            };
+            let end_near_balance = match ft_service
+                .get_near_balance(&account, end_block_id as u64)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    debug!("{}: {}", account, e);
+                    0.0
+                }
+            };
+            let record = GetBalancesResultRow {
+                account: account.clone(),
+                start_date: start_date.to_rfc3339(),
+                end_date: end_date.to_rfc3339(),
+                start_block_id,
+                end_block_id,
+                start_balance: start_near_balance,
+                end_balance: end_near_balance,
+                token_id: "NEAR".to_string(),
+                symbol: "NEAR".to_string(),
+            };
+            rows.push(record);
+
             anyhow::Ok(rows)
         });
         handles.push(handle);
     }
 
     let mut rows = vec![];
-
     join_all(handles).await.iter().for_each(|row| match row {
         Ok(result) => match result {
             Ok(res) => rows.extend(res.iter().cloned()),
@@ -348,10 +401,8 @@ async fn get_balances(
         wtr.serialize(row).unwrap();
     }
     wtr.flush()?;
-    // Create a response with the CSV data
     let response = Response::builder()
         .header("Content-Type", "text/csv")
-        // .header("Content-Disposition", "attachment; filename=data.csv")
         .body(Body::from(wtr.into_inner().unwrap()))?;
     Ok(response)
 }
