@@ -19,7 +19,7 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
     sync::Arc,
 };
-use tokio::sync::RwLock;
+use tokio::{join, sync::RwLock};
 use tracing::{debug, info};
 
 use std::hash::{Hash, Hasher};
@@ -232,6 +232,122 @@ impl FtService {
 
         let amount = safe_divide_u128(amount, 24);
         Ok(amount)
+    }
+
+    pub async fn get_staking_details(
+        &self,
+        staking_pool: &str,
+        account_id: &str,
+        block_id: u64,
+    ) -> Result<(f64, f64, bool)> {
+        let args = json!({ "account_id": account_id }).to_string().into_bytes();
+
+        let unstaked_balance_future = self.get_unstaked_balance(staking_pool, &args, block_id);
+        let staked_balance_future = self.get_staked_balance(staking_pool, &args, block_id);
+        let unstaked_balance_available_future =
+            self.is_unstaked_balance_available(staking_pool, &args, block_id);
+
+        let (unstaked_balance, staked_balance, unstaked_balance_available) = join!(
+            unstaked_balance_future,
+            staked_balance_future,
+            unstaked_balance_available_future
+        );
+
+        Ok((
+            safe_divide_u128(staked_balance?, 24),
+            safe_divide_u128(unstaked_balance?, 24),
+            unstaked_balance_available?,
+        ))
+    }
+
+    async fn get_unstaked_balance(
+        &self,
+        staking_pool: &str,
+        args: &[u8],
+        block_id: u64,
+    ) -> Result<u128> {
+        self.archival_rate_limiter.write().await.until_ready().await;
+        let result = view_function_call(
+            &self.near_client,
+            QueryRequest::CallFunction {
+                account_id: staking_pool.parse()?,
+                method_name: "get_account_unstaked_balance".to_string(),
+                args: FunctionArgs::from(args.to_vec()),
+            },
+            BlockReference::BlockId(Height(block_id)),
+        )
+        .await;
+
+        match result {
+            Ok(v) => Ok(serde_json::from_slice::<String>(&v)?.parse::<u128>()?),
+            Err(e) => {
+                bail!(
+                    "Error getting staking details for staking pool: {}, error: {:?}",
+                    staking_pool,
+                    e
+                );
+            }
+        }
+    }
+
+    async fn get_staked_balance(
+        &self,
+        staking_pool: &str,
+        args: &[u8],
+        block_id: u64,
+    ) -> Result<u128> {
+        self.archival_rate_limiter.write().await.until_ready().await;
+        let result = view_function_call(
+            &self.near_client,
+            QueryRequest::CallFunction {
+                account_id: staking_pool.parse()?,
+                method_name: "get_account_staked_balance".to_string(),
+                args: FunctionArgs::from(args.to_vec()),
+            },
+            BlockReference::BlockId(Height(block_id)),
+        )
+        .await;
+
+        match result {
+            Ok(v) => Ok(serde_json::from_slice::<String>(&v)?.parse::<u128>()?),
+            Err(e) => {
+                bail!(
+                    "Error getting staking details for staking pool: {}, error: {:?}",
+                    staking_pool,
+                    e
+                );
+            }
+        }
+    }
+
+    async fn is_unstaked_balance_available(
+        &self,
+        staking_pool: &str,
+        args: &[u8],
+        block_id: u64,
+    ) -> Result<bool> {
+        self.archival_rate_limiter.write().await.until_ready().await;
+        let result = view_function_call(
+            &self.near_client,
+            QueryRequest::CallFunction {
+                account_id: staking_pool.parse()?,
+                method_name: "is_account_unstaked_balance_available".to_string(),
+                args: FunctionArgs::from(args.to_vec()),
+            },
+            BlockReference::BlockId(Height(block_id)),
+        )
+        .await;
+
+        match result {
+            Ok(v) => Ok(serde_json::from_slice::<bool>(&v)?),
+            Err(e) => {
+                bail!(
+                    "Error getting staking details for staking pool: {}, error: {:?}",
+                    staking_pool,
+                    e
+                );
+            }
+        }
     }
 }
 

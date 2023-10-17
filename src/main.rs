@@ -33,6 +33,7 @@ use tokio::{spawn, sync::Semaphore};
 use tracing::*;
 use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter, FmtSubscriber};
 use tta::tta_impl::TTA;
+use tta_rust::{get_accounts_and_lockups, results_to_response};
 
 use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient};
 
@@ -125,7 +126,9 @@ async fn router() -> anyhow::Result<Router> {
         .route("/likelyBlockId", get(get_closest_block_id))
         .with_state(sql_client.clone())
         .route("/balances", get(get_balances))
-        .with_state((sql_client, ft_service.clone()))
+        .with_state((sql_client.clone(), ft_service.clone()))
+        .route("/staking", get(get_staking_report))
+        .with_state((sql_client, ft_service))
         .layer(middleware))
 }
 
@@ -255,17 +258,12 @@ async fn get_balances(
     let start_block_id = sql_client.get_closest_block_id(start_nanos).await?;
     let end_block_id = sql_client.get_closest_block_id(end_nanos).await?;
 
-    let accounts: HashSet<String> = params
-        .accounts
-        .split(',')
-        .map(String::from)
-        .filter(|account| account != "near" && account != "system")
-        .collect();
+    let accounts = get_accounts_and_lockups(&params.accounts);
 
     let client = reqwest::Client::new();
     let mut handles = vec![];
 
-    for account in accounts {
+    for (account, _) in accounts {
         let client = client.clone();
         let ft_service = ft_service.clone();
         let start_block_id = start_block_id;
@@ -396,15 +394,148 @@ async fn get_balances(
         }
     });
 
-    let mut wtr = csv::Writer::from_writer(Vec::new());
-    for row in rows {
-        wtr.serialize(row).unwrap();
+    let r = results_to_response(rows)?;
+    Ok(r)
+}
+
+#[derive(Debug, Deserialize)]
+struct GetStaking {
+    pub date: String,
+    pub accounts: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct StakingReportRow {
+    pub account: String,
+    pub staking_pool: String,
+    pub amount_staked: f64,
+    pub amount_unstaked: f64,
+    pub ready_for_withdraw: bool,
+    pub lockup_of: Option<String>,
+    pub date: String,
+    pub block_id: u128,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct StakingDeposit {
+    pub deposit: String,
+    pub validator_id: String,
+}
+
+async fn get_staking_report(
+    Query(params): Query<GetStaking>,
+    State((sql_client, ft_service)): State<(SqlClient, FtService)>,
+) -> Result<Response<Body>, AppError> {
+    let date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.date).unwrap().into();
+    let start_nanos = date.timestamp_nanos() as u128;
+
+    let block_id = sql_client.get_closest_block_id(start_nanos).await?;
+
+    let accounts = get_accounts_and_lockups(&params.accounts);
+
+    // todo add support for lockup accounts
+
+    let client = reqwest::Client::new();
+    let mut handles = vec![];
+
+    for (account, master_account) in accounts {
+        let client = client.clone();
+        let ft_service = ft_service.clone();
+        let block_id = block_id;
+
+        let handle = spawn(async move {
+            info!("Getting staking for {}", account);
+            let mut rows: Vec<StakingReportRow> = vec![];
+
+            let staking_deposits = client
+                .get(format!(
+                    "https://api.kitwallet.app/staking-deposits/{account}"
+                ))
+                .send()
+                .await?
+                .json::<Vec<StakingDeposit>>()
+                .await?;
+            info!(
+                "Account {} staking deposits: {:?}",
+                account, staking_deposits
+            );
+
+            let handles: Vec<_> = staking_deposits
+                .iter()
+                .map(|staking_deposit| {
+                    let staking_deposit = staking_deposit.clone();
+                    let account = account.clone();
+                    let ft_service = ft_service.clone();
+                    let master_account = master_account.clone();
+                    async move {
+                        let staking_details = match ft_service
+                            .get_staking_details(
+                                &staking_deposit.validator_id,
+                                &account,
+                                block_id as u64,
+                            )
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                debug!("{}: {}", account, e);
+                                return Err(e);
+                            }
+                        };
+
+                        if staking_details.0 == 0.0 && staking_details.1 == 0.0 {
+                            return Ok(None);
+                        }
+
+                        let record = StakingReportRow {
+                            account,
+                            staking_pool: staking_deposit.validator_id.clone(),
+                            amount_staked: staking_details.0,
+                            amount_unstaked: staking_details.1,
+                            ready_for_withdraw: staking_details.2,
+                            lockup_of: master_account,
+                            date: date.to_rfc3339(),
+                            block_id,
+                        };
+                        Ok(Some(record))
+                    }
+                })
+                .collect();
+
+            let results: Vec<_> = join_all(handles).await;
+            for result in results {
+                match result {
+                    Ok(record) => {
+                        if let Some(record) = record {
+                            rows.push(record)
+                        }
+                    }
+                    Err(e) => {
+                        error!("staking error: {:?}", e);
+                    }
+                }
+            }
+
+            anyhow::Ok(rows)
+        });
+        handles.push(handle);
     }
-    wtr.flush()?;
-    let response = Response::builder()
-        .header("Content-Type", "text/csv")
-        .body(Body::from(wtr.into_inner().unwrap()))?;
-    Ok(response)
+
+    let mut rows = vec![];
+    join_all(handles).await.iter().for_each(|row| match row {
+        Ok(result) => match result {
+            Ok(res) => rows.extend(res.iter().cloned()),
+            Err(e) => {
+                println!("{:?}", e)
+            }
+        },
+        Err(e) => {
+            warn!("{:?}", e)
+        }
+    });
+
+    let r = results_to_response(rows)?;
+    Ok(r)
 }
 
 struct AppError(anyhow::Error);
