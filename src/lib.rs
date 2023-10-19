@@ -16,6 +16,9 @@ pub fn get_accounts_and_lockups(accounts: &str) -> HashSet<(String, Option<Strin
         .collect();
 
     for a in accounts.clone() {
+        if a.0.ends_with(".lockup.near") {
+            continue;
+        }
         let lockup_account = get_associated_lockup(&a.0, "near");
         accounts.insert((lockup_account, Some(a.0.clone())));
     }

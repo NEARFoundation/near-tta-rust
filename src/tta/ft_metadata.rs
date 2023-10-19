@@ -206,7 +206,7 @@ impl FtService {
         Ok(amount)
     }
 
-    pub async fn get_near_balance(&self, account_id: &str, block_id: u64) -> Result<f64> {
+    pub async fn get_near_balance(&self, account_id: &str, block_id: u64) -> Result<(f64, f64)> {
         self.archival_rate_limiter.write().await.until_ready().await;
         let RpcQueryResponse { kind, .. } = match self
             .near_client
@@ -223,15 +223,17 @@ impl FtService {
                 bail!("Error calling ViewAccount: {:?}", e);
             }
         };
-        let amount = match kind {
-            QueryResponseKind::ViewAccount(AccountView { amount, .. }) => amount,
+        let view = match kind {
+            QueryResponseKind::ViewAccount(view) => view,
             _ => {
-                bail!("Received unexpected kind: {:?}", kind); // <-- Add this line
+                bail!("Received unexpected kind: {:?}", kind);
             }
         };
 
-        let amount = safe_divide_u128(amount, 24);
-        Ok(amount)
+        let amount = safe_divide_u128(view.amount, 24);
+        let locked = safe_divide_u128(view.locked, 24);
+
+        Ok((amount, locked))
     }
 
     pub async fn get_staking_details(
@@ -344,6 +346,58 @@ impl FtService {
                 bail!(
                     "Error getting staking details for staking pool: {}, error: {:?}",
                     staking_pool,
+                    e
+                );
+            }
+        }
+    }
+
+    pub async fn get_locked_amount(&self, lockup: &str, block_id: u64) -> Result<u128> {
+        self.archival_rate_limiter.write().await.until_ready().await;
+        let args = json!({}).to_string().into_bytes();
+        let result = view_function_call(
+            &self.near_client,
+            QueryRequest::CallFunction {
+                account_id: lockup.parse()?,
+                method_name: "get_locked_amount".to_string(),
+                args: FunctionArgs::from(args.to_vec()),
+            },
+            BlockReference::BlockId(Height(block_id)),
+        )
+        .await;
+
+        match result {
+            Ok(v) => Ok(serde_json::from_slice::<String>(&v)?.parse::<u128>()?),
+            Err(e) => {
+                bail!(
+                    "Error getting locked amount for lockup: {}, error: {:?}",
+                    lockup,
+                    e
+                );
+            }
+        }
+    }
+
+    pub async fn get_liquid_owners_balance(&self, lockup: &str, block_id: u64) -> Result<u128> {
+        self.archival_rate_limiter.write().await.until_ready().await;
+        let args = json!({}).to_string().into_bytes();
+        let result = view_function_call(
+            &self.near_client,
+            QueryRequest::CallFunction {
+                account_id: lockup.parse()?,
+                method_name: "get_liquid_owners_balance".to_string(),
+                args: FunctionArgs::from(args.to_vec()),
+            },
+            BlockReference::BlockId(Height(block_id)),
+        )
+        .await;
+
+        match result {
+            Ok(v) => Ok(serde_json::from_slice::<String>(&v)?.parse::<u128>()?),
+            Err(e) => {
+                bail!(
+                    "Error get_liquid_owners_balance for lockup: {}, error: {:?}",
+                    lockup,
                     e
                 );
             }

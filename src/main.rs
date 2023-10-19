@@ -1,5 +1,6 @@
 use csv::Writer;
 use hyper::Body;
+use near_primitives::types::AccountId;
 use tower::ServiceBuilder;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -35,8 +36,9 @@ use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, EnvFilter,
 use tta::tta_impl::TTA;
 use tta_rust::{get_accounts_and_lockups, results_to_response};
 
-use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient};
+use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient, tta_impl::safe_divide_u128};
 
+pub mod lockup;
 pub mod tta;
 
 #[tokio::main]
@@ -128,6 +130,8 @@ async fn router() -> anyhow::Result<Router> {
         .route("/balances", get(get_balances))
         .with_state((sql_client.clone(), ft_service.clone()))
         .route("/staking", get(get_staking_report))
+        .with_state((sql_client.clone(), ft_service.clone()))
+        .route("/lockup", get(get_lockup_balances))
         .with_state((sql_client, ft_service))
         .layer(middleware))
 }
@@ -350,7 +354,7 @@ async fn get_balances(
                 Ok(v) => v,
                 Err(e) => {
                     debug!("{}: {}", account, e);
-                    0.0
+                    (0.0, 0.0)
                 }
             };
             let end_near_balance = match ft_service
@@ -360,7 +364,7 @@ async fn get_balances(
                 Ok(v) => v,
                 Err(e) => {
                     debug!("{}: {}", account, e);
-                    0.0
+                    (0.0, 0.0)
                 }
             };
             let record = GetBalancesResultRow {
@@ -369,8 +373,8 @@ async fn get_balances(
                 end_date: end_date.to_rfc3339(),
                 start_block_id,
                 end_block_id,
-                start_balance: start_near_balance,
-                end_balance: end_near_balance,
+                start_balance: start_near_balance.0,
+                end_balance: end_near_balance.0,
                 token_id: "NEAR".to_string(),
                 symbol: "NEAR".to_string(),
             };
@@ -399,7 +403,7 @@ async fn get_balances(
 }
 
 #[derive(Debug, Deserialize)]
-struct GetStaking {
+struct DateAndAccounts {
     pub date: String,
     pub accounts: String,
 }
@@ -423,7 +427,7 @@ struct StakingDeposit {
 }
 
 async fn get_staking_report(
-    Query(params): Query<GetStaking>,
+    Query(params): Query<DateAndAccounts>,
     State((sql_client, ft_service)): State<(SqlClient, FtService)>,
 ) -> Result<Response<Body>, AppError> {
     let date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.date).unwrap().into();
@@ -432,8 +436,6 @@ async fn get_staking_report(
     let block_id = sql_client.get_closest_block_id(start_nanos).await?;
 
     let accounts = get_accounts_and_lockups(&params.accounts);
-
-    // todo add support for lockup accounts
 
     let client = reqwest::Client::new();
     let mut handles = vec![];
@@ -525,6 +527,91 @@ async fn get_staking_report(
     join_all(handles).await.iter().for_each(|row| match row {
         Ok(result) => match result {
             Ok(res) => rows.extend(res.iter().cloned()),
+            Err(e) => {
+                println!("{:?}", e)
+            }
+        },
+        Err(e) => {
+            warn!("{:?}", e)
+        }
+    });
+
+    let r = results_to_response(rows)?;
+    Ok(r)
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct LockupBalanceRow {
+    pub account: String,
+    pub lockup_balance: f64,
+    pub locked_amount: f64,
+    pub liquid_amount: f64,
+    pub lockup_of: Option<String>,
+    pub date: String,
+    pub block_id: u128,
+}
+
+async fn get_lockup_balances(
+    Query(params): Query<DateAndAccounts>,
+    State((sql_client, ft_service)): State<(SqlClient, FtService)>,
+) -> Result<Response<Body>, AppError> {
+    let date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.date).unwrap().into();
+    let date_nanos = date.timestamp_nanos() as u128;
+    let block_id = sql_client.get_closest_block_id(date_nanos).await?;
+    let accounts = get_accounts_and_lockups(&params.accounts);
+    let mut handles = vec![];
+
+    for (account, master_account) in accounts {
+        if master_account.is_none() {
+            continue;
+        }
+
+        let ft_service = ft_service.clone();
+        let account: AccountId = account.parse().unwrap();
+        let block_id = block_id as u64;
+
+        let handle = spawn(async move {
+            info!("Getting lockup_balance for {}", account);
+
+            let account = account.clone();
+            let ft_service = ft_service.clone();
+            let master_account = master_account.clone();
+
+            let lockup =
+                lockup::l::get_lockup_contract_state(&ft_service.near_client, &account, &block_id)
+                    .await?;
+            let timestamp = date.timestamp_nanos();
+
+            // todo: address has_bug, get hash of contract
+            let locked_amount = lockup.get_locked_amount(timestamp as u64, false);
+            // let unlocked = lockup.get_unvested_amount(timestamp as u64, false);
+            let locked_amount = safe_divide_u128(locked_amount.0, 24);
+            let (balance, locked) = ft_service.get_near_balance(&account, block_id).await?;
+
+            info!(
+                "Account {} lockup balance: {:?}, {:?}",
+                account, balance, locked
+            );
+
+            let record = LockupBalanceRow {
+                account: account.to_string(),
+                lockup_of: master_account,
+                lockup_balance: balance,
+                locked_amount,
+                liquid_amount: balance - locked_amount,
+                date: date.to_rfc3339(),
+                block_id: block_id as u128,
+            };
+
+            anyhow::Ok(record)
+        });
+        handles.push(handle);
+    }
+
+    let mut rows = vec![];
+    join_all(handles).await.iter().for_each(|row| match row {
+        Ok(result) => match result {
+            Ok(res) => rows.push(res.clone()),
             Err(e) => {
                 println!("{:?}", e)
             }
