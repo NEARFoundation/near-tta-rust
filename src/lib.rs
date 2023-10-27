@@ -1,9 +1,17 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
+use governor::{clock, state, RateLimiter};
 use hyper::{Body, Response};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+pub type RateLim = RateLimiter<
+    state::NotKeyed,
+    state::InMemoryState,
+    clock::QuantaClock,
+    governor::middleware::NoOpMiddleware<clock::QuantaInstant>,
+>;
 
 // Extract accounts,
 // returns: account, is lockup, master account

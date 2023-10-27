@@ -1,5 +1,7 @@
+
 use csv::Writer;
 use hyper::Body;
+use kitwallet::KitWallet;
 use near_primitives::types::AccountId;
 use tower::ServiceBuilder;
 use tower_http::{
@@ -7,7 +9,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_loki::url::Url;
-use tta::models::ReportRow;
+use tta::{models::ReportRow};
 
 use axum::{
     extract::{Query, State},
@@ -18,11 +20,11 @@ use axum::{
     Json, Router,
 };
 
-use chrono::DateTime;
+use chrono::{DateTime};
 use dotenvy::dotenv;
 
 use futures_util::future::join_all;
-use near_jsonrpc_client::{JsonRpcClient, NEAR_MAINNET_ARCHIVAL_RPC_URL};
+use near_jsonrpc_client::{JsonRpcClient};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use std::{
@@ -38,6 +40,7 @@ use tta_rust::{get_accounts_and_lockups, results_to_response};
 
 use crate::tta::{ft_metadata::FtService, sql::sql_queries::SqlClient, tta_impl::safe_divide_u128};
 
+pub mod kitwallet;
 pub mod lockup;
 pub mod tta;
 
@@ -105,14 +108,20 @@ fn init_tracing() -> anyhow::Result<()> {
 
 async fn router() -> anyhow::Result<Router> {
     let pool = PgPoolOptions::new()
-        .max_connections(30)
+        .max_connections(50)
         .connect(env!("DATABASE_URL"))
         .await?;
 
     let sql_client = SqlClient::new(pool);
-    let archival_near_client = JsonRpcClient::connect(NEAR_MAINNET_ARCHIVAL_RPC_URL);
+    // let archival_near_client = JsonRpcClient::connect("http://beta.rpc.mainnet.near.org");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 5))
+        .build()?;
+    let archival_near_client =
+        JsonRpcClient::with(client).connect("http://beta.rpc.mainnet.near.org");
     // let near_client = JsonRpcClient::connect(NEAR_MAINNET_RPC_URL);
     let ft_service = FtService::new(archival_near_client);
+    let kitwallet = KitWallet::new();
     let semaphore = Arc::new(Semaphore::new(30));
 
     let tta_service = TTA::new(sql_client.clone(), ft_service.clone(), semaphore);
@@ -128,7 +137,9 @@ async fn router() -> anyhow::Result<Router> {
         .route("/likelyBlockId", get(get_closest_block_id))
         .with_state(sql_client.clone())
         .route("/balances", get(get_balances))
-        .with_state((sql_client.clone(), ft_service.clone()))
+        .with_state((sql_client.clone(), ft_service.clone(), kitwallet.clone()))
+        .route("/balancesfull", post(get_balances_full))
+        .with_state((sql_client.clone(), ft_service.clone(), kitwallet))
         .route("/staking", get(get_staking_report))
         .with_state((sql_client.clone(), ft_service.clone()))
         .route("/lockup", get(get_lockup_balances))
@@ -242,13 +253,14 @@ struct GetBalancesResultRow {
     pub end_block_id: u128,
     pub token_id: String,
     pub symbol: String,
+    pub lockup_of: Option<String>,
     pub start_balance: f64,
     pub end_balance: f64,
 }
 
 async fn get_balances(
     Query(params): Query<GetBalances>,
-    State((sql_client, ft_service)): State<(SqlClient, FtService)>,
+    State((sql_client, ft_service, kitwallet)): State<(SqlClient, FtService, KitWallet)>,
 ) -> Result<Response<Body>, AppError> {
     let start_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.start_date)
         .unwrap()
@@ -263,36 +275,42 @@ async fn get_balances(
     let end_block_id = sql_client.get_closest_block_id(end_nanos).await?;
 
     let accounts = get_accounts_and_lockups(&params.accounts);
+    let mut f = vec![];
 
-    let client = reqwest::Client::new();
+    for (a, b) in accounts.clone() {
+        f.push(a.clone());
+        if let Some(b) = b {
+            f.push(b.clone())
+        };
+    }
+
+    kitwallet.get_likely_tokens_for_accounts(f).await?;
+
     let mut handles = vec![];
 
-    for (account, _) in accounts {
-        let client = client.clone();
+    for (account, lockup_of) in accounts {
         let ft_service = ft_service.clone();
         let start_block_id = start_block_id;
         let end_block_id = end_block_id;
+        let start_date = start_date;
+        let end_date = end_date;
+        let kitwallet = kitwallet.clone();
 
         let handle = spawn(async move {
-            info!("Getting balances for {}", account);
+            info!(
+                "Getting balances for {}, dates: start {} end {}",
+                account, start_date, end_date
+            );
             let mut rows: Vec<GetBalancesResultRow> = vec![];
 
-            let likely_tokens = client
-                .get(format!(
-                    "https://api.kitwallet.app/account/{account}/likelyTokens"
-                ))
-                .send()
-                .await?
-                .json::<Vec<String>>()
-                .await?;
-            info!("Account {} likely tokens: {:?}", account, likely_tokens);
-
+            let likely_tokens = kitwallet.get_likely_tokens(account.clone()).await?;
             let token_handles: Vec<_> = likely_tokens
                 .iter()
                 .map(|token| {
                     let token = token.clone();
                     let account = account.clone();
                     let ft_service = ft_service.clone();
+                    let lockup_of = lockup_of.clone();
                     async move {
                         let metadata = match ft_service.assert_ft_metadata(&token).await {
                             Ok(v) => v,
@@ -331,6 +349,7 @@ async fn get_balances(
                             end_balance,
                             token_id: token.clone(),
                             symbol: metadata.symbol,
+                            lockup_of,
                         };
                         Ok(record)
                     }
@@ -377,6 +396,7 @@ async fn get_balances(
                 end_balance: end_near_balance.0,
                 token_id: "NEAR".to_string(),
                 symbol: "NEAR".to_string(),
+                lockup_of,
             };
             rows.push(record);
 
@@ -391,6 +411,180 @@ async fn get_balances(
             Ok(res) => rows.extend(res.iter().cloned()),
             Err(e) => {
                 println!("{:?}", e)
+            }
+        },
+        Err(e) => {
+            warn!("{:?}", e)
+        }
+    });
+
+    let r = results_to_response(rows)?;
+    Ok(r)
+}
+
+#[derive(Debug, Deserialize)]
+struct GetBalancesFull {
+    pub start_date: String,
+    pub end_date: String,
+    pub accounts: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct GetBalancesFullResultRow {
+    pub account: String,
+    pub date: String,
+    pub block_id: u128,
+    pub token_id: String,
+    pub symbol: String,
+    pub lockup_of: Option<String>,
+    pub balance: f64,
+}
+
+#[tracing::instrument(skip(sql_client, ft_service, kitwallet))]
+async fn get_balances_full(
+    State((sql_client, ft_service, kitwallet)): State<(SqlClient, FtService, KitWallet)>,
+    Json(params): Json<GetBalancesFull>,
+) -> Result<Response<Body>, AppError> {
+    let start_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.start_date)
+        .unwrap()
+        .into();
+    let end_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.end_date)
+        .unwrap()
+        .into();
+    let accounts = params.accounts.join(",");
+    let accounts = get_accounts_and_lockups(accounts.as_str());
+    let mut f = vec![];
+
+    for (a, b) in &accounts {
+        f.push(a.clone());
+        if let Some(b) = b {
+            f.push(b.clone())
+        };
+    }
+    error!("test");
+
+    let likely_tokens = kitwallet.get_likely_tokens_for_accounts(f).await?;
+
+    // put all days between start and end in all_dates.
+    let all_dates = {
+        let mut dates = vec![];
+        let mut date = start_date;
+        while date <= end_date {
+            dates.push(date);
+            date += chrono::Duration::days(1);
+        }
+        dates
+    };
+
+    let block_ids = sql_client
+        .get_closest_block_ids(
+            all_dates
+                .iter()
+                .map(|d| d.timestamp_nanos() as u128)
+                .collect(),
+        )
+        .await?;
+    let mut handles = vec![];
+
+    for (idx, date) in all_dates.iter().enumerate() {
+        let date = *date;
+        let idx = idx;
+        let block_id = block_ids[idx];
+
+        for (account, lockup_of) in &accounts {
+            let ft_service = ft_service.clone();
+            let likely_tokens = likely_tokens.get(account).unwrap().clone();
+            let account = account.clone();
+            let lockup_of = lockup_of.clone();
+
+            // sleep 1 ms
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+            let handle = spawn(async move {
+                let mut rows: Vec<GetBalancesFullResultRow> = vec![];
+
+                let token_handles: Vec<_> = likely_tokens
+                    .iter()
+                    .map(|token| {
+                        let token = token.clone();
+                        let account = account.clone();
+                        let ft_service = ft_service.clone();
+                        let lockup_of = lockup_of.clone();
+                        async move {
+                            let metadata = match ft_service.assert_ft_metadata(&token).await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    debug!("{}: {}", account, e);
+                                    return Err(e);
+                                }
+                            };
+                            let balance = match ft_service
+                                .assert_ft_balance(&token, &account, block_id as u64)
+                                .await
+                            {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    debug!("{}: {}", account, e);
+                                    0.0
+                                }
+                            };
+
+                            let record = GetBalancesFullResultRow {
+                                account: account.clone(),
+                                date: date.to_rfc3339(),
+                                token_id: token.clone(),
+                                symbol: metadata.symbol,
+                                lockup_of: lockup_of.clone(),
+                                block_id,
+                                balance,
+                            };
+                            Ok(record)
+                        }
+                    })
+                    .collect();
+
+                let token_results: Vec<_> = join_all(token_handles).await;
+                for result in token_results {
+                    match result {
+                        Ok(record) => rows.push(record),
+                        Err(e) => {
+                            debug!("Token fetch error: {:?}", e);
+                        }
+                    }
+                }
+
+                let near_balance =
+                    match ft_service.get_near_balance(&account, block_id as u64).await {
+                        Ok(v) => v.0,
+                        Err(e) => {
+                            error!("{}: {}", account, e);
+                            0.0
+                        }
+                    };
+
+                let record = GetBalancesFullResultRow {
+                    account: account.clone(),
+                    date: date.to_rfc3339(),
+                    block_id,
+                    balance: near_balance,
+                    token_id: "NEAR".to_string(),
+                    symbol: "NEAR".to_string(),
+                    lockup_of: lockup_of.clone(),
+                };
+                rows.push(record);
+
+                anyhow::Ok(rows)
+            });
+            handles.push(handle);
+        }
+    }
+
+    let mut rows = vec![];
+    join_all(handles).await.iter().for_each(|row| match row {
+        Ok(result) => match result {
+            Ok(res) => rows.extend(res.iter().cloned()),
+            Err(e) => {
+                error!("{:?}", e)
             }
         },
         Err(e) => {

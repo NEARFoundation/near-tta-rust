@@ -5,7 +5,7 @@ use num_traits::cast::ToPrimitive;
 use sqlx::{types::Decimal, Pool, Postgres};
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
-use tracing::{error, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use crate::tta::sql::models::BlockId;
 
@@ -351,6 +351,7 @@ impl SqlClient {
 
     #[instrument(skip(self))]
     pub async fn get_closest_block_id(&self, date: u128) -> Result<u128> {
+        debug!("calling DB");
         let date_decimal = Decimal::from(date);
 
         let block = sqlx::query_as!(
@@ -369,4 +370,48 @@ impl SqlClient {
 
         Ok(block.block_height.to_u128().unwrap())
     }
+
+    #[instrument(skip(self, dates))]
+    pub async fn get_closest_block_ids(&self, dates: Vec<u128>) -> Result<Vec<u128>> {
+        debug!("calling DB");
+        // Convert dates to decimals
+        let dates_decimal: Vec<Decimal> = dates.iter().map(|&d| Decimal::from(d)).collect();
+
+        let result = sqlx::query_as!(
+            BlockIdWithDate,
+            r##"
+            WITH RECURSIVE timestamps_cte(date) AS (
+                SELECT unnest($1::numeric[]) AS date
+            )
+            SELECT
+                ts.date AS "input_date!",
+                (
+                    SELECT block_height
+                    FROM blocks
+                    WHERE block_timestamp >= ts.date
+                    ORDER BY block_timestamp ASC
+                    LIMIT 1
+                ) AS "block_height!"
+            FROM timestamps_cte ts
+            WHERE ts.date = ANY($1::numeric[])
+            "##,
+            &dates_decimal
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Extract block_height from result and return
+        let block_ids: Vec<u128> = result
+            .into_iter()
+            .map(|r| r.block_height.to_u128().unwrap())
+            .collect();
+
+        Ok(block_ids)
+    }
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct BlockIdWithDate {
+    input_date: Decimal,
+    block_height: Decimal,
 }

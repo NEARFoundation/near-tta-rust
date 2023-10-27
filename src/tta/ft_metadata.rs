@@ -1,8 +1,12 @@
 use anyhow::{bail, Result};
-use governor::{clock, state, Quota, RateLimiter};
+use governor::{Quota, RateLimiter};
 use lru::LruCache;
-use near_jsonrpc_client::JsonRpcClient;
-use near_jsonrpc_primitives::types::query::{QueryResponseKind, RpcQueryRequest, RpcQueryResponse};
+use near_jsonrpc_client::{
+    JsonRpcClient,
+};
+use near_jsonrpc_primitives::types::query::{
+    QueryResponseKind, RpcQueryError, RpcQueryRequest, RpcQueryResponse,
+};
 use near_primitives::{
     types::{
         BlockId::Height,
@@ -10,7 +14,7 @@ use near_primitives::{
         Finality::{self},
         FunctionArgs,
     },
-    views::{AccountView, CallResult, QueryRequest},
+    views::{CallResult, QueryRequest},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -20,7 +24,8 @@ use std::{
     sync::Arc,
 };
 use tokio::{join, sync::RwLock};
-use tracing::{debug, info};
+use tracing::{debug, error};
+use tta_rust::RateLim;
 
 use std::hash::{Hash, Hasher};
 
@@ -62,19 +67,13 @@ pub struct FtMetadata {
     pub decimals: u8,
 }
 
-type RateLim = RateLimiter<
-    state::NotKeyed,
-    state::InMemoryState,
-    clock::QuantaClock,
-    governor::middleware::NoOpMiddleware<clock::QuantaInstant>,
->;
-
 #[derive(Debug, Clone)]
 pub struct FtService {
     pub ft_metadata_cache: Arc<RwLock<HashMap<String, FtMetadata>>>,
     pub ft_balances_cache: Arc<RwLock<LruCache<CompositeKey, f64>>>,
     pub near_client: JsonRpcClient,
     pub archival_rate_limiter: Arc<RwLock<RateLim>>,
+    pub likely_tokens: Arc<RwLock<HashMap<String, Vec<String>>>>,
 }
 
 impl FtService {
@@ -86,8 +85,9 @@ impl FtService {
             ))),
             near_client,
             archival_rate_limiter: Arc::new(RwLock::new(RateLimiter::direct(Quota::per_second(
-                NonZeroU32::new(5u32).unwrap(),
+                NonZeroU32::new(5_000_000u32).unwrap(),
             )))),
+            likely_tokens: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -99,7 +99,7 @@ impl FtService {
             .await
             .contains_key(ft_token_id)
         {
-            self.archival_rate_limiter.write().await.until_ready().await;
+            // self.archival_rate_limiter.write().await.until_ready().await;
             let args = json!({}).to_string().into_bytes();
             let result = match view_function_call(
                 &self.near_client,
@@ -141,6 +141,9 @@ impl FtService {
         account_id: &String,
         block_id: u64,
     ) -> Result<f64> {
+        if token_id == "kusama-airdrop.near" {
+            return Ok(0.0);
+        }
         if self
             .ft_balances_cache
             .clone()
@@ -164,9 +167,8 @@ impl FtService {
         }
         let metadata = self.assert_ft_metadata(token_id).await.unwrap();
 
-        self.archival_rate_limiter.write().await.until_ready().await;
+        // self.archival_rate_limiter.write().await.until_ready().await;
         let args = json!({ "account_id": account_id }).to_string().into_bytes();
-        info!("Calling ft_balance_of");
         let result = match view_function_call(
             &self.near_client,
             QueryRequest::CallFunction {
@@ -206,8 +208,9 @@ impl FtService {
         Ok(amount)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn get_near_balance(&self, account_id: &str, block_id: u64) -> Result<(f64, f64)> {
-        self.archival_rate_limiter.write().await.until_ready().await;
+        // self.archival_rate_limiter.write().await.until_ready().await;
         let RpcQueryResponse { kind, .. } = match self
             .near_client
             .call(RpcQueryRequest {
@@ -220,12 +223,27 @@ impl FtService {
         {
             Ok(v) => v,
             Err(e) => {
-                bail!("Error calling ViewAccount: {:?}", e);
+                if let Some(w) = e.handler_error() {
+                    match w {
+                        RpcQueryError::UnknownAccount { .. } => {
+                            if !account_id.ends_with("lockup.near") {
+                                error!("Unknown Account: {:?}", e); // Here's the debug print for UnknownAccount
+                            }
+                        }
+                        _ => {
+                            error!("Error calling ViewAccount: {:?}, block_id: {}", e, block_id);
+                        }
+                    }
+                } else {
+                    error!("Error calling ViewAccount: {:?}", e);
+                }
+                return Ok((0.0, 0.0));
             }
         };
         let view = match kind {
             QueryResponseKind::ViewAccount(view) => view,
             _ => {
+                error!("Received unexpected kind: {:?}", kind);
                 bail!("Received unexpected kind: {:?}", kind);
             }
         };
@@ -405,6 +423,7 @@ impl FtService {
     }
 }
 
+#[tracing::instrument(skip(client))]
 pub async fn view_function_call(
     client: &JsonRpcClient,
     request: QueryRequest,
@@ -412,18 +431,35 @@ pub async fn view_function_call(
 ) -> anyhow::Result<Vec<u8>> {
     let RpcQueryResponse { kind, .. } = match client
         .call(RpcQueryRequest {
-            block_reference,
-            request: request.clone(),
+            block_reference: block_reference.clone(),
+            request,
         })
         .await
     {
         Ok(v) => v,
         Err(e) => {
-            bail!(
-                "Error calling view_function_call: {:?}, request: {:?}",
-                e,
-                request
-            );
+            if let Some(w) = e.handler_error() {
+                match w {
+                    RpcQueryError::UnknownAccount { .. } => {
+                        error!("Unknown Account: {:?}", e);
+                    }
+                    RpcQueryError::NoContractCode { .. } => {
+                        error!("No Contract Code: {:?}", e);
+                    }
+                    RpcQueryError::ContractExecutionError { .. } => {
+                        error!("Contract Execution Error: {:?}", e);
+                    }
+                    _ => {
+                        error!(
+                            "Error calling ViewAccount: {:?}, block_id: {:#?}",
+                            e, block_reference
+                        );
+                    }
+                }
+            } else {
+                error!("Error calling ViewAccount: {:?}", e);
+            }
+            bail!("Error calling ViewAccount: {:?}", e)
         }
     };
 
