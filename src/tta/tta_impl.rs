@@ -273,7 +273,7 @@ impl TTA {
         let mut rows_handle = vec![];
         while let Some(txn) = rx.recv().await {
             let t2: TTA = self.clone();
-            let f2 = for_account.clone();
+            let for_account = for_account.clone();
             let metadata = metadata.clone();
             let row = tokio::spawn(async move {
                 if txn.ara_action_kind != "FUNCTION_CALL" && txn.ara_action_kind != "TRANSFER" {
@@ -323,37 +323,54 @@ impl TTA {
 
                 let mut onchain_balance = None;
                 let mut onchain_balance_token = None;
-                if include_balances && (ft_amount_in.is_some() || ft_amount_out.is_some()) {
-                    debug!("Getting onchain balance for {}", f2);
-                    let ft_service = t2.ft_service.clone();
-                    onchain_balance = Some(
-                        ft_service
-                            .assert_ft_balance(
-                                &txn.r_receiver_account_id,
-                                &f2,
+                if include_balances {
+                    if ft_amount_in.is_some() || ft_amount_out.is_some() {
+                        debug!("Getting onchain balance for {}", for_account);
+                        let ft_service = t2.ft_service.clone();
+                        onchain_balance = Some(
+                            ft_service
+                                .assert_ft_balance(
+                                    &txn.r_receiver_account_id,
+                                    &for_account,
+                                    txn.b_block_height
+                                        .to_u64()
+                                        .expect("Block height too large to fit in u128"),
+                                )
+                                .await?,
+                        );
+                        onchain_balance_token = Some(
+                            ft_service
+                                .assert_ft_metadata(&txn.r_receiver_account_id)
+                                .await?
+                                .symbol,
+                        );
+                    } else {
+                        // It's a NEAR transfer
+                        let near = t2
+                            .ft_service
+                            .get_near_balance(
+                                &for_account,
                                 txn.b_block_height
                                     .to_u64()
-                                    .expect("Block height too large to fit in u128"),
+                                    .expect("Block height too large to fit in u64"),
                             )
-                            .await?,
-                    );
-                    onchain_balance_token = Some(
-                        ft_service
-                            .assert_ft_metadata(&txn.r_receiver_account_id)
-                            .await?
-                            .symbol,
-                    );
+                            .await?;
+                        if let Some(near) = near {
+                            onchain_balance = Some(near.0);
+                            onchain_balance_token = Some("NEAR".to_string());
+                        }
+                    }
                 }
 
                 let data = metadata
                     .read()
                     .unwrap()
                     .metadata
-                    .get(&f2)
+                    .get(&for_account)
                     .and_then(|m| m.get(&txn.t_transaction_hash).cloned());
 
                 Ok(Some(ReportRow {
-                    account_id: f2.clone(),
+                    account_id: for_account.clone(),
                     date: get_transaction_date(&txn),
                     method_name: get_method_name(&txn, &txn_args),
                     block_timestamp: txn.b_block_timestamp.to_u128().unwrap(),

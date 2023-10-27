@@ -1,9 +1,7 @@
 use anyhow::{bail, Result};
 use governor::{Quota, RateLimiter};
 use lru::LruCache;
-use near_jsonrpc_client::{
-    JsonRpcClient,
-};
+use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::{
     QueryResponseKind, RpcQueryError, RpcQueryRequest, RpcQueryResponse,
 };
@@ -182,6 +180,10 @@ impl FtService {
         {
             Ok(v) => v,
             Err(e) => {
+                error!(
+                    "Error assert_ft_balance for token_id: {}, error: {:?}",
+                    token_id, e
+                );
                 bail!(
                     "Error assert_ft_balance for token_id: {}, error: {:?}",
                     token_id,
@@ -209,7 +211,11 @@ impl FtService {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn get_near_balance(&self, account_id: &str, block_id: u64) -> Result<(f64, f64)> {
+    pub async fn get_near_balance(
+        &self,
+        account_id: &str,
+        block_id: u64,
+    ) -> Result<Option<(f64, f64)>> {
         // self.archival_rate_limiter.write().await.until_ready().await;
         let RpcQueryResponse { kind, .. } = match self
             .near_client
@@ -237,7 +243,7 @@ impl FtService {
                 } else {
                     error!("Error calling ViewAccount: {:?}", e);
                 }
-                return Ok((0.0, 0.0));
+                return Ok(None);
             }
         };
         let view = match kind {
@@ -251,7 +257,7 @@ impl FtService {
         let amount = safe_divide_u128(view.amount, 24);
         let locked = safe_divide_u128(view.locked, 24);
 
-        Ok((amount, locked))
+        Ok(Some((amount, locked)))
     }
 
     pub async fn get_staking_details(

@@ -1,4 +1,3 @@
-
 use csv::Writer;
 use hyper::Body;
 use kitwallet::KitWallet;
@@ -9,7 +8,7 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing_loki::url::Url;
-use tta::{models::ReportRow};
+use tta::models::ReportRow;
 
 use axum::{
     extract::{Query, State},
@@ -20,11 +19,11 @@ use axum::{
     Json, Router,
 };
 
-use chrono::{DateTime};
+use chrono::DateTime;
 use dotenvy::dotenv;
 
 use futures_util::future::join_all;
-use near_jsonrpc_client::{JsonRpcClient};
+use near_jsonrpc_client::JsonRpcClient;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use std::{
@@ -254,8 +253,8 @@ struct GetBalancesResultRow {
     pub token_id: String,
     pub symbol: String,
     pub lockup_of: Option<String>,
-    pub start_balance: f64,
-    pub end_balance: f64,
+    pub start_balance: Option<f64>,
+    pub end_balance: Option<f64>,
 }
 
 async fn get_balances(
@@ -345,8 +344,8 @@ async fn get_balances(
                             end_date: end_date.to_rfc3339(),
                             start_block_id,
                             end_block_id,
-                            start_balance,
-                            end_balance,
+                            start_balance: Some(start_balance),
+                            end_balance: Some(end_balance),
                             token_id: token.clone(),
                             symbol: metadata.symbol,
                             lockup_of,
@@ -373,7 +372,7 @@ async fn get_balances(
                 Ok(v) => v,
                 Err(e) => {
                     debug!("{}: {}", account, e);
-                    (0.0, 0.0)
+                    None
                 }
             };
             let end_near_balance = match ft_service
@@ -383,17 +382,18 @@ async fn get_balances(
                 Ok(v) => v,
                 Err(e) => {
                     debug!("{}: {}", account, e);
-                    (0.0, 0.0)
+                    None
                 }
             };
+
             let record = GetBalancesResultRow {
                 account: account.clone(),
                 start_date: start_date.to_rfc3339(),
                 end_date: end_date.to_rfc3339(),
                 start_block_id,
                 end_block_id,
-                start_balance: start_near_balance.0,
-                end_balance: end_near_balance.0,
+                start_balance: start_near_balance.map(|start| start.0),
+                end_balance: end_near_balance.map(|end: (f64, f64)| end.0),
                 token_id: "NEAR".to_string(),
                 symbol: "NEAR".to_string(),
                 lockup_of,
@@ -437,7 +437,7 @@ struct GetBalancesFullResultRow {
     pub token_id: String,
     pub symbol: String,
     pub lockup_of: Option<String>,
-    pub balance: f64,
+    pub balance: Option<f64>,
 }
 
 #[tracing::instrument(skip(sql_client, ft_service, kitwallet))]
@@ -522,10 +522,10 @@ async fn get_balances_full(
                                 .assert_ft_balance(&token, &account, block_id as u64)
                                 .await
                             {
-                                Ok(v) => v,
+                                Ok(v) => Some(v),
                                 Err(e) => {
                                     debug!("{}: {}", account, e);
-                                    0.0
+                                    None
                                 }
                             };
 
@@ -555,10 +555,10 @@ async fn get_balances_full(
 
                 let near_balance =
                     match ft_service.get_near_balance(&account, block_id as u64).await {
-                        Ok(v) => v.0,
+                        Ok(v) => v.map(|v| v.0),
                         Err(e) => {
                             error!("{}: {}", account, e);
-                            0.0
+                            None
                         }
                     };
 
@@ -737,9 +737,9 @@ async fn get_staking_report(
 #[derive(Debug, Serialize, Clone)]
 struct LockupBalanceRow {
     pub account: String,
-    pub lockup_balance: f64,
-    pub locked_amount: f64,
-    pub liquid_amount: f64,
+    pub lockup_balance: Option<f64>,
+    pub locked_amount: Option<f64>,
+    pub liquid_amount: Option<f64>,
     pub lockup_of: Option<String>,
     pub date: String,
     pub block_id: u128,
@@ -780,19 +780,16 @@ async fn get_lockup_balances(
             let locked_amount = lockup.get_locked_amount(timestamp as u64, false);
             // let unlocked = lockup.get_unvested_amount(timestamp as u64, false);
             let locked_amount = safe_divide_u128(locked_amount.0, 24);
-            let (balance, locked) = ft_service.get_near_balance(&account, block_id).await?;
+            let near_balance = ft_service.get_near_balance(&account, block_id).await?;
 
-            info!(
-                "Account {} lockup balance: {:?}, {:?}",
-                account, balance, locked
-            );
+            info!("Account {} lockup balance: {:?}", account, near_balance);
 
             let record = LockupBalanceRow {
                 account: account.to_string(),
                 lockup_of: master_account,
-                lockup_balance: balance,
-                locked_amount,
-                liquid_amount: balance - locked_amount,
+                lockup_balance: near_balance.map(|v| v.0),
+                locked_amount: Some(locked_amount),
+                liquid_amount: near_balance.map(|v| v.0 - locked_amount),
                 date: date.to_rfc3339(),
                 block_id: block_id as u128,
             };
