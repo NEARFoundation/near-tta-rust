@@ -202,14 +202,7 @@ impl SqlClient {
                 RECEIPT_RECEIVER_ACCOUNT_ID = ANY ($1)
                 AND EO.STATUS IN ('SUCCESS_RECEIPT_ID', 'SUCCESS_VALUE')
                 AND B.BLOCK_TIMESTAMP >= $2
-                AND B.BLOCK_TIMESTAMP < $3
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM RECEIPTS R2
-                    JOIN EXECUTION_OUTCOMES EO2 ON EO2.RECEIPT_ID = R2.RECEIPT_ID
-                    WHERE (T.CONVERTED_INTO_RECEIPT_ID = R2.RECEIPT_ID OR T.TRANSACTION_HASH = R2.ORIGINATED_FROM_TRANSACTION_HASH)
-                    AND EO2.STATUS = 'FAILURE'
-                );
+                AND B.BLOCK_TIMESTAMP < $3;
             "##,
             &accs,
             &start_date_decimal,
