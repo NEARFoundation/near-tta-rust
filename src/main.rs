@@ -11,6 +11,7 @@ use tracing_loki::url::Url;
 use tta::models::ReportRow;
 
 use axum::{
+    body,
     extract::{Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -136,6 +137,7 @@ async fn router() -> anyhow::Result<Router> {
         .route("/likelyBlockId", get(get_closest_block_id))
         .with_state(sql_client.clone())
         .route("/balances", get(get_balances))
+        .route("/balances", post(get_balances))
         .with_state((sql_client.clone(), ft_service.clone(), kitwallet.clone()))
         .route("/balancesfull", post(get_balances_full))
         .with_state((sql_client.clone(), ft_service.clone(), kitwallet))
@@ -240,7 +242,12 @@ async fn get_closest_block_id(
 struct GetBalances {
     pub start_date: String,
     pub end_date: String,
-    pub accounts: String,
+    pub accounts: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetBalancesBody {
+    pub accounts: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -260,6 +267,7 @@ struct GetBalancesResultRow {
 async fn get_balances(
     Query(params): Query<GetBalances>,
     State((sql_client, ft_service, kitwallet)): State<(SqlClient, FtService, KitWallet)>,
+    body: Option<Json<GetBalancesBody>>,
 ) -> Result<Response<Body>, AppError> {
     let start_date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.start_date)
         .unwrap()
@@ -272,8 +280,12 @@ async fn get_balances(
 
     let start_block_id = sql_client.get_closest_block_id(start_nanos).await?;
     let end_block_id = sql_client.get_closest_block_id(end_nanos).await?;
+    let a = match body {
+        Some(body) => body.accounts.join(","),
+        None => params.accounts.unwrap_or("".to_string()),
+    };
 
-    let accounts = get_accounts_and_lockups(&params.accounts);
+    let accounts = get_accounts_and_lockups(&a);
     let mut f = vec![];
 
     for (a, b) in accounts.clone() {
