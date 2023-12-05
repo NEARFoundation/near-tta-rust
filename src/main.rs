@@ -145,6 +145,7 @@ async fn router() -> anyhow::Result<Router> {
         .route("/staking", post(get_staking_report))
         .with_state((sql_client.clone(), ft_service.clone()))
         .route("/lockup", get(get_lockup_balances))
+        .route("/lockup", post(get_lockup_balances))
         .with_state((sql_client, ft_service))
         .layer(middleware))
 }
@@ -765,9 +766,15 @@ struct LockupBalanceRow {
 }
 
 async fn get_lockup_balances(
-    Query(params): Query<DateAndAccounts>,
+    params: Option<Query<DateAndAccounts>>,
     State((sql_client, ft_service)): State<(SqlClient, FtService)>,
+    body: Option<Json<DateAndAccounts>>,
 ) -> Result<Response<Body>, AppError> {
+    let params = match params {
+        Some(params) => params.0,
+        None => body.unwrap().0,
+    };
+
     let date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.date).unwrap().into();
     let date_nanos = date.timestamp_nanos() as u128;
     let block_id = sql_client.get_closest_block_id(date_nanos).await?;
