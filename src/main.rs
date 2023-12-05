@@ -142,6 +142,7 @@ async fn router() -> anyhow::Result<Router> {
         .route("/balancesfull", post(get_balances_full))
         .with_state((sql_client.clone(), ft_service.clone(), kitwallet))
         .route("/staking", get(get_staking_report))
+        .route("/staking", post(get_staking_report))
         .with_state((sql_client.clone(), ft_service.clone()))
         .route("/lockup", get(get_lockup_balances))
         .with_state((sql_client, ft_service))
@@ -633,9 +634,15 @@ struct StakingDeposit {
 }
 
 async fn get_staking_report(
-    Query(params): Query<DateAndAccounts>,
+    params: Option<Query<DateAndAccounts>>,
     State((sql_client, ft_service)): State<(SqlClient, FtService)>,
+    body: Option<Json<DateAndAccounts>>,
 ) -> Result<Response<Body>, AppError> {
+    let params = match params {
+        Some(params) => params.0,
+        None => body.unwrap().0,
+    };
+
     let date: DateTime<chrono::Utc> = DateTime::parse_from_rfc3339(&params.date).unwrap().into();
     let start_nanos = date.timestamp_nanos() as u128;
 
