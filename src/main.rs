@@ -44,6 +44,9 @@ pub mod kitwallet;
 pub mod lockup;
 pub mod tta;
 
+const POOL_SIZE: u32 = 500;
+const SEMAPHORE_SIZE: usize = 50;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     info!("Starting up");
@@ -108,7 +111,7 @@ fn init_tracing() -> anyhow::Result<()> {
 
 async fn router() -> anyhow::Result<Router> {
     let pool = PgPoolOptions::new()
-        .max_connections(50)
+        .max_connections(POOL_SIZE)
         .connect(env!("DATABASE_URL"))
         .await?;
 
@@ -122,7 +125,7 @@ async fn router() -> anyhow::Result<Router> {
     // let near_client = JsonRpcClient::connect(NEAR_MAINNET_RPC_URL);
     let ft_service = FtService::new(archival_near_client);
     let kitwallet = KitWallet::new();
-    let semaphore = Arc::new(Semaphore::new(30));
+    let semaphore = Arc::new(Semaphore::new(SEMAPHORE_SIZE));
 
     let tta_service = TTA::new(sql_client.clone(), ft_service.clone(), semaphore);
 
