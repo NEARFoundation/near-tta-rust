@@ -186,8 +186,8 @@ async fn get_txns_report(
     let accounts: HashSet<String> = params
         .accounts
         .split(',')
-        .map(String::from)
-        .filter(|account| account != "near" && account != "system")
+        .map(|s| String::from(s.trim()))
+        .filter(|account| account != "near" && account != "system" && !account.is_empty())
         .collect();
 
     let include_balances = params.include_balances.unwrap_or(false);
