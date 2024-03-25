@@ -1,3 +1,5 @@
+mod models;
+
 use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 
 use anyhow::bail;
@@ -6,11 +8,13 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use tta_rust::RateLim;
 
+use crate::kitwallet::models::FastNearFT;
+
 #[derive(Clone)]
 pub struct KitWallet {
     rate_limiter: Arc<RwLock<RateLim>>,
     client: reqwest::Client,
-    cache: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    cache: Arc<RwLock<HashMap<String, (i64, Vec<String>)>>>,
 }
 
 impl Default for KitWallet {
@@ -38,7 +42,10 @@ impl KitWallet {
         let cache_read = self.cache.read().await;
 
         if let Some(likely_tokens) = cache_read.get(&account) {
-            return Ok(likely_tokens.clone());
+            // Check if the cache is expired
+            if chrono::Utc::now().timestamp() - likely_tokens.0 < 60 {
+                return Ok(likely_tokens.1.clone());
+            }
         }
 
         drop(cache_read); // Release the read lock
@@ -50,22 +57,33 @@ impl KitWallet {
             "Account {} likely tokens not cached, fetching from API",
             account
         );
+        // https://api.fastnear.com/v1/account/here.near/ft
         let likely_tokens = self
             .client
             .get(format!(
-                "https://api.kitwallet.app/account/{}/likelyTokens",
+                "https://api.fastnear.com/v1/account/{}/ft",
                 account
             ))
             .send()
             .await?
-            .json::<Vec<String>>()
+            .json::<FastNearFT>()
             .await?;
 
         // Insert the result into the cache
         let mut cache_write = self.cache.write().await;
-        cache_write.insert(account.clone(), likely_tokens.clone());
+        cache_write.insert(
+            account.clone(),
+            (
+                chrono::Utc::now().timestamp(),
+                likely_tokens
+                    .tokens
+                    .iter()
+                    .map(|t| t.contract_id.clone())
+                    .collect(),
+            ),
+        );
 
-        Ok(likely_tokens)
+        Ok(cache_write.get(&account).unwrap().1.clone())
     }
 
     // get all in parallel
