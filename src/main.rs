@@ -631,10 +631,16 @@ struct StakingReportRow {
     pub block_id: u128,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-struct StakingDeposit {
-    pub deposit: String,
-    pub validator_id: String,
+#[derive(Debug, Serialize, Deserialize)]
+struct StakingData {
+    account_id: String,
+    pools: Vec<Pool>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Pool {
+    last_update_block_height: Option<u64>,
+    pool_id: String,
 }
 
 async fn get_staking_report(
@@ -668,11 +674,11 @@ async fn get_staking_report(
 
             let staking_deposits = client
                 .get(format!(
-                    "https://api.kitwallet.app/staking-deposits/{account}"
+                    "https://api.fastnear.com/v1/account/{account}/staking"
                 ))
                 .send()
                 .await?
-                .json::<Vec<StakingDeposit>>()
+                .json::<StakingData>()
                 .await?;
             info!(
                 "Account {} staking deposits: {:?}",
@@ -680,19 +686,16 @@ async fn get_staking_report(
             );
 
             let handles: Vec<_> = staking_deposits
+                .pools
                 .iter()
-                .map(|staking_deposit| {
-                    let staking_deposit = staking_deposit.clone();
+                .map(|pool| {
+                    let pool_id = pool.pool_id.clone();
                     let account = account.clone();
                     let ft_service = ft_service.clone();
                     let master_account = master_account.clone();
                     async move {
                         let staking_details = match ft_service
-                            .get_staking_details(
-                                &staking_deposit.validator_id,
-                                &account,
-                                block_id as u64,
-                            )
+                            .get_staking_details(&pool_id, &account, block_id as u64)
                             .await
                         {
                             Ok(v) => v,
@@ -708,7 +711,7 @@ async fn get_staking_report(
 
                         let record = StakingReportRow {
                             account,
-                            staking_pool: staking_deposit.validator_id.clone(),
+                            staking_pool: pool_id.clone(),
                             amount_staked: staking_details.0,
                             amount_unstaked: staking_details.1,
                             ready_for_withdraw: staking_details.2,
